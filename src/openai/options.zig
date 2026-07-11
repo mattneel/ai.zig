@@ -1,5 +1,6 @@
 const std = @import("std");
 const provider = @import("provider");
+const provider_utils = @import("provider_utils");
 const capabilities = @import("capabilities.zig");
 
 const Allocator = std.mem.Allocator;
@@ -29,6 +30,49 @@ pub const ChatOptions = struct {
     safety_identifier: ?[]const u8 = null,
     system_message_mode: ?capabilities.SystemMessageMode = null,
     force_reasoning: ?bool = null,
+};
+
+pub const ContextManagement = struct {
+    compact_threshold: std.json.Value,
+};
+
+pub const AllowedTools = struct {
+    tool_names: []const []const u8,
+    mode: []const u8 = "auto",
+};
+
+/// Provider options accepted by the OpenAI Responses API model. Field names
+/// intentionally mirror the upstream camelCase namespace while this parsed
+/// representation mirrors the wire spelling used by request assembly.
+pub const ResponsesOptions = struct {
+    conversation: ?[]const u8 = null,
+    include: ?[]const []const u8 = null,
+    instructions: ?[]const u8 = null,
+    logprobs: ?Logprobs = null,
+    max_tool_calls: ?u64 = null,
+    metadata: ?std.json.Value = null,
+    parallel_tool_calls: ?bool = null,
+    previous_response_id: ?[]const u8 = null,
+    prompt_cache_key: ?[]const u8 = null,
+    prompt_cache_options: ?std.json.Value = null,
+    prompt_cache_retention: ?[]const u8 = null,
+    reasoning_effort: ?[]const u8 = null,
+    reasoning_mode: ?[]const u8 = null,
+    reasoning_context: ?[]const u8 = null,
+    reasoning_summary: ?[]const u8 = null,
+    reasoning_summary_set: bool = false,
+    safety_identifier: ?[]const u8 = null,
+    service_tier: ?[]const u8 = null,
+    store: ?bool = null,
+    pass_through_unsupported_files: bool = false,
+    strict_json_schema: bool = true,
+    text_verbosity: ?[]const u8 = null,
+    truncation: ?[]const u8 = null,
+    user: ?[]const u8 = null,
+    system_message_mode: ?capabilities.SystemMessageMode = null,
+    force_reasoning: ?bool = null,
+    context_management: ?[]const ContextManagement = null,
+    allowed_tools: ?AllowedTools = null,
 };
 
 pub const EmbeddingOptions = struct {
@@ -63,6 +107,21 @@ pub fn parseEmbeddingOptions(
     if (root.get("openai")) |canonical| try applyEmbeddingNamespace(arena, &result, canonical, diag);
     if (!std.mem.eql(u8, namespace, "openai")) {
         if (root.get(namespace)) |custom| try applyEmbeddingNamespace(arena, &result, custom, diag);
+    }
+    return result;
+}
+
+pub fn parseResponsesOptions(
+    arena: Allocator,
+    value: ?provider.ProviderOptions,
+    namespace: []const u8,
+    diag: ?*provider.Diagnostics,
+) ParseError!ResponsesOptions {
+    var result: ResponsesOptions = .{};
+    const root = try providerOptionsRoot(arena, value, diag) orelse return result;
+    if (root.get("openai")) |canonical| try applyResponsesNamespace(arena, &result, canonical, diag);
+    if (!std.mem.eql(u8, namespace, "openai")) {
+        if (root.get(namespace)) |custom| try applyResponsesNamespace(arena, &result, custom, diag);
     }
     return result;
 }
@@ -173,6 +232,178 @@ fn applyEmbeddingNamespace(
     if (value.object.get("encodingFormat")) |item| {
         result.encoding_format = (try optionalEnumString(arena, item, diag, "encodingFormat", &.{ "float", "base64" })) orelse "float";
     }
+}
+
+fn applyResponsesNamespace(
+    arena: Allocator,
+    result: *ResponsesOptions,
+    value: std.json.Value,
+    diag: ?*provider.Diagnostics,
+) ParseError!void {
+    if (value == .null) return;
+    if (value != .object) return invalid(arena, diag, "OpenAI provider options namespace must be an object");
+    var iterator = value.object.iterator();
+    while (iterator.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const item = entry.value_ptr.*;
+        if (std.mem.eql(u8, name, "conversation")) {
+            result.conversation = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "include")) {
+            result.include = try parseInclude(arena, item, diag);
+        } else if (std.mem.eql(u8, name, "instructions")) {
+            result.instructions = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "logprobs")) {
+            result.logprobs = switch (item) {
+                .bool => |enabled| .{ .boolean = enabled },
+                .integer => |count| if (count >= 1 and count <= 20) .{ .count = @intCast(count) } else return invalidField(arena, diag, name, "must be true, false, or an integer from 1 through 20"),
+                .null => null,
+                else => return invalidField(arena, diag, name, "must be true, false, or an integer from 1 through 20"),
+            };
+        } else if (std.mem.eql(u8, name, "maxToolCalls")) {
+            result.max_tool_calls = try optionalU64(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "metadata")) {
+            result.metadata = if (item == .null) null else try provider_utils.cloneJsonValue(arena, item);
+        } else if (std.mem.eql(u8, name, "parallelToolCalls")) {
+            result.parallel_tool_calls = try optionalBool(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "previousResponseId")) {
+            result.previous_response_id = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "promptCacheKey")) {
+            result.prompt_cache_key = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "promptCacheOptions")) {
+            result.prompt_cache_options = try parsePromptCacheOptions(arena, item, diag);
+        } else if (std.mem.eql(u8, name, "promptCacheRetention")) {
+            result.prompt_cache_retention = try optionalEnumString(arena, item, diag, name, &.{ "in_memory", "24h" });
+        } else if (std.mem.eql(u8, name, "reasoningEffort")) {
+            result.reasoning_effort = try optionalEnumString(arena, item, diag, name, &.{ "none", "minimal", "low", "medium", "high", "xhigh", "max" });
+        } else if (std.mem.eql(u8, name, "reasoningMode")) {
+            result.reasoning_mode = try optionalEnumString(arena, item, diag, name, &.{ "standard", "pro" });
+        } else if (std.mem.eql(u8, name, "reasoningContext")) {
+            result.reasoning_context = try optionalEnumString(arena, item, diag, name, &.{ "auto", "current_turn", "all_turns" });
+        } else if (std.mem.eql(u8, name, "reasoningSummary")) {
+            result.reasoning_summary_set = true;
+            result.reasoning_summary = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "safetyIdentifier")) {
+            result.safety_identifier = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "serviceTier")) {
+            result.service_tier = try optionalEnumString(arena, item, diag, name, &.{ "auto", "flex", "priority", "default" });
+        } else if (std.mem.eql(u8, name, "store")) {
+            result.store = try optionalBool(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "passThroughUnsupportedFiles")) {
+            result.pass_through_unsupported_files = (try optionalBool(arena, item, diag, name)) orelse false;
+        } else if (std.mem.eql(u8, name, "strictJsonSchema")) {
+            result.strict_json_schema = (try optionalBool(arena, item, diag, name)) orelse true;
+        } else if (std.mem.eql(u8, name, "textVerbosity")) {
+            result.text_verbosity = try optionalEnumString(arena, item, diag, name, &.{ "low", "medium", "high" });
+        } else if (std.mem.eql(u8, name, "truncation")) {
+            result.truncation = try optionalEnumString(arena, item, diag, name, &.{ "auto", "disabled" });
+        } else if (std.mem.eql(u8, name, "user")) {
+            result.user = try optionalString(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "systemMessageMode")) {
+            const mode = try optionalEnumString(arena, item, diag, name, &.{ "system", "developer", "remove" });
+            result.system_message_mode = if (mode) |selected|
+                if (std.mem.eql(u8, selected, "system")) .system else if (std.mem.eql(u8, selected, "developer")) .developer else .remove
+            else
+                null;
+        } else if (std.mem.eql(u8, name, "forceReasoning")) {
+            result.force_reasoning = try optionalBool(arena, item, diag, name);
+        } else if (std.mem.eql(u8, name, "contextManagement")) {
+            result.context_management = try parseContextManagement(arena, item, diag);
+        } else if (std.mem.eql(u8, name, "allowedTools")) {
+            result.allowed_tools = try parseAllowedTools(arena, item, diag);
+        }
+    }
+}
+
+fn parseInclude(arena: Allocator, value: std.json.Value, diag: ?*provider.Diagnostics) ParseError!?[]const []const u8 {
+    const values = try optionalStringList(arena, value, diag, "include") orelse return null;
+    const allowed = [_][]const u8{
+        "reasoning.encrypted_content",
+        "file_search_call.results",
+        "web_search_call.results",
+        "message.output_text.logprobs",
+    };
+    for (values) |value_item| {
+        var supported = false;
+        for (allowed) |candidate| if (std.mem.eql(u8, value_item, candidate)) {
+            supported = true;
+            break;
+        };
+        if (!supported) return invalidField(arena, diag, "include", "contains an unsupported value");
+    }
+    return values;
+}
+
+fn parsePromptCacheOptions(arena: Allocator, value: std.json.Value, diag: ?*provider.Diagnostics) ParseError!?std.json.Value {
+    if (value == .null) return null;
+    if (value != .object) return invalidField(arena, diag, "promptCacheOptions", "must be an object");
+    var output: std.json.ObjectMap = .empty;
+    if (value.object.get("mode")) |mode_value| {
+        const mode = try optionalEnumString(arena, mode_value, diag, "promptCacheOptions.mode", &.{ "implicit", "explicit" });
+        if (mode) |selected| try output.put(arena, "mode", .{ .string = selected });
+    }
+    if (value.object.get("ttl")) |ttl_value| {
+        const ttl = try optionalString(arena, ttl_value, diag, "promptCacheOptions.ttl");
+        if (ttl) |selected| {
+            if (!std.mem.eql(u8, selected, "30m")) return invalidField(arena, diag, "promptCacheOptions.ttl", "must be 30m");
+            try output.put(arena, "ttl", .{ .string = selected });
+        }
+    }
+    return .{ .object = output };
+}
+
+fn optionalStringList(
+    arena: Allocator,
+    value: std.json.Value,
+    diag: ?*provider.Diagnostics,
+    name: []const u8,
+) ParseError!?[]const []const u8 {
+    if (value == .null) return null;
+    if (value != .array) return invalidField(arena, diag, name, "must be an array of strings");
+    const result = try arena.alloc([]const u8, value.array.items.len);
+    for (value.array.items, result) |item, *destination| {
+        if (item != .string) return invalidField(arena, diag, name, "must be an array of strings");
+        destination.* = item.string;
+    }
+    return result;
+}
+
+fn parseContextManagement(
+    arena: Allocator,
+    value: std.json.Value,
+    diag: ?*provider.Diagnostics,
+) ParseError!?[]const ContextManagement {
+    if (value == .null) return null;
+    if (value != .array) return invalidField(arena, diag, "contextManagement", "must be an array");
+    const result = try arena.alloc(ContextManagement, value.array.items.len);
+    for (value.array.items, result) |item, *destination| {
+        if (item != .object) return invalidField(arena, diag, "contextManagement", "entries must be objects");
+        const kind = item.object.get("type") orelse return invalidField(arena, diag, "contextManagement", "entries require type");
+        if (kind != .string or !std.mem.eql(u8, kind.string, "compaction")) return invalidField(arena, diag, "contextManagement", "only compaction is supported");
+        const threshold = item.object.get("compactThreshold") orelse return invalidField(arena, diag, "contextManagement", "entries require compactThreshold");
+        destination.* = .{ .compact_threshold = switch (threshold) {
+            .integer, .float, .number_string => try provider_utils.cloneJsonValue(arena, threshold),
+            else => return invalidField(arena, diag, "contextManagement", "compactThreshold must be a number"),
+        } };
+    }
+    return result;
+}
+
+fn parseAllowedTools(
+    arena: Allocator,
+    value: std.json.Value,
+    diag: ?*provider.Diagnostics,
+) ParseError!?AllowedTools {
+    if (value == .null) return null;
+    if (value != .object) return invalidField(arena, diag, "allowedTools", "must be an object");
+    const names = value.object.get("toolNames") orelse return invalidField(arena, diag, "allowedTools", "requires toolNames");
+    const tool_names = (try optionalStringList(arena, names, diag, "allowedTools.toolNames")) orelse
+        return invalidField(arena, diag, "allowedTools", "requires toolNames");
+    if (tool_names.len == 0) return invalidField(arena, diag, "allowedTools.toolNames", "must not be empty");
+    const mode = if (value.object.get("mode")) |item|
+        (try optionalEnumString(arena, item, diag, "allowedTools.mode", &.{ "auto", "required" })) orelse "auto"
+    else
+        "auto";
+    return .{ .tool_names = tool_names, .mode = mode };
 }
 
 fn optionalString(arena: Allocator, value: std.json.Value, diag: ?*provider.Diagnostics, name: []const u8) ParseError!?[]const u8 {

@@ -1754,6 +1754,114 @@ test "integration ToolLoopAgent drives native OpenAI Chat through a two-step too
     try std.testing.expectEqual(0, server.serveErrorCount());
 }
 
+test "integration ToolLoopAgent drives the default OpenAI Responses model through a two-step tool loop" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"resp-agent-1","created_at":1700000000,"model":"gpt-4o-mini","output":[{"type":"function_call","id":"fc-weather-1","call_id":"call-weather-1","name":"weather","arguments":"{\"city\":\"Paris\"}"}],"incomplete_details":null,"usage":{"input_tokens":4,"output_tokens":2}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"resp-agent-2","created_at":1700000001,"model":"gpt-4o-mini","output":[{"type":"message","role":"assistant","id":"msg-agent-2","content":[{"type":"output_text","text":"Paris is sunny and 21 C.","annotations":[]}]}],"incomplete_details":null,"usage":{"input_tokens":8,"output_tokens":5}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    var factory = openai.createOpenAi(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var responses = try factory.languageModel("gpt-4o-mini", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = responses.languageModel() },
+        .instructions = .{ .text = "Call weather once, then answer." },
+        .tools = &tools,
+    });
+    var result = try agent.generate(io, allocator, .{
+        .prompt = .{ .text = "What is the weather in Paris?" },
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", result.text());
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expectEqualStrings("/responses", requests[0].target);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"function_call\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"function_call_output\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"call_id\":\"call-weather-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"id\":\"fc-weather-1\",\"type\":\"item_reference\"") == null);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
+test "integration OpenAI Responses store=false round-trips encrypted reasoning through an agent step" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"resp-reasoning-1","created_at":1700000000,"model":"gpt-5-mini","output":[{"type":"reasoning","id":"rs-roundtrip","encrypted_content":"encrypted-roundtrip-payload","summary":[{"type":"summary_text","text":"Checking the weather tool."}]},{"type":"function_call","id":"fc-roundtrip","call_id":"call-roundtrip","name":"weather","arguments":"{\"city\":\"Paris\"}"}],"incomplete_details":null,"usage":{"input_tokens":6,"output_tokens":4,"output_tokens_details":{"reasoning_tokens":2}}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"resp-reasoning-2","created_at":1700000001,"model":"gpt-5-mini","output":[{"type":"message","role":"assistant","id":"msg-roundtrip","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]}],"incomplete_details":null,"usage":{"input_tokens":12,"output_tokens":3}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    var factory = openai.createOpenAi(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var responses = try factory.responses("gpt-5-mini", null);
+    var options_arena = std.heap.ArenaAllocator.init(allocator);
+    defer options_arena.deinit();
+    const provider_options = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        options_arena.allocator(),
+        "{\"openai\":{\"store\":false}}",
+        .{},
+    );
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = responses.languageModel() },
+        .tools = &tools,
+        .provider_options = provider_options,
+    });
+    var result = try agent.generate(io, allocator, .{ .prompt = .{ .text = "Weather?" } });
+    defer result.deinit();
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"reasoning\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"encrypted_content\":\"encrypted-roundtrip-payload\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"function_call\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"function_call_output\"") != null);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "integration ToolLoopAgent remains provider-agnostic through Anthropic streaming" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -2226,6 +2334,109 @@ test "live native OpenAI Chat generate and stream smoke" {
     std.debug.print(
         "live native OpenAI Chat: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
         .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live native OpenAI Responses generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(io, env_path, allocator, .limited(1024 * 1024)) catch {
+        std.debug.print("live OpenAI Responses smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENAI_API_KEY") orelse {
+        std.debug.print("live OpenAI Responses smoke skipped: OPENAI_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var factory = openai.createOpenAi(.{ .api_key = api_key, .transport = client.transport() });
+    const model_id = "gpt-4o-mini";
+    var responses = try factory.responses(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{ .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }} } }};
+    const options: provider.CallOptions = .{ .prompt = &prompt, .max_output_tokens = 32 };
+
+    var generate_arena = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena.deinit();
+    const generated = try responses.languageModel().doGenerate(io, generate_arena.allocator(), &options, null);
+    var generated_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_bytes > 0);
+
+    var stream_arena = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena.deinit();
+    const streamed = try responses.languageModel().doStream(io, stream_arena.allocator(), &options, null);
+    defer streamed.stream.deinit(io);
+    var parts: usize = 0;
+    var deltas: usize = 0;
+    var streamed_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                deltas += 1;
+                streamed_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveOpenAiResponsesStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(deltas > 0);
+    try std.testing.expect(streamed_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live OpenAI Responses: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_bytes, parts, deltas, streamed_bytes },
+    );
+}
+
+test "live ToolLoopAgent executes one OpenAI Responses tool step" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(io, env_path, allocator, .limited(1024 * 1024)) catch {
+        std.debug.print("live OpenAI Responses agent skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENAI_API_KEY") orelse {
+        std.debug.print("live OpenAI Responses agent skipped: OPENAI_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var factory = openai.createOpenAi(.{ .api_key = api_key, .transport = client.transport() });
+    const model_id = "gpt-4o-mini";
+    var responses = try factory.responses(model_id, null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = responses.languageModel() },
+        .instructions = .{ .text = "You must call weather exactly once for Paris, then answer briefly using its result." },
+        .tools = &tools,
+        .max_output_tokens = 96,
+    });
+    var result = try agent.generate(io, allocator, .{ .prompt = .{ .text = "What is the weather in Paris?" } });
+    defer result.deinit();
+    try std.testing.expect(result.steps.len >= 2);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(result.text().len > 0);
+    std.debug.print(
+        "live OpenAI Responses agent: model={s} steps={d} tool_calls={d} final_text_bytes={d}\n",
+        .{ model_id, result.steps.len, weather.calls, result.text().len },
     );
 }
 

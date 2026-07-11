@@ -1,6 +1,6 @@
-//! Native OpenAI provider. Phase 8a intentionally routes the default language
-//! model factory to Chat Completions; Phase 8b replaces that single seam with
-//! the Responses API while preserving explicit `chat`.
+//! Native OpenAI provider. The default language-model factory uses the
+//! Responses API, matching upstream; explicit `chat` remains available for
+//! Chat Completions-compatible endpoints.
 
 const std = @import("std");
 const provider = @import("provider");
@@ -14,8 +14,12 @@ pub const getLanguageModelCapabilities = capabilities.getLanguageModelCapabiliti
 pub const options = @import("options.zig");
 pub const chat_messages = @import("chat_messages.zig");
 pub const chat_tools = @import("chat_tools.zig");
+pub const responses_input = @import("responses_input.zig");
+pub const responses_api = @import("responses_api.zig");
+pub const responses_tools = @import("responses_tools.zig");
 pub const api = @import("api.zig");
 pub const ChatLanguageModel = @import("chat_language_model.zig").ChatLanguageModel;
+pub const ResponsesLanguageModel = @import("responses_language_model.zig").ResponsesLanguageModel;
 pub const EmbeddingModel = @import("embedding_model.zig").EmbeddingModel;
 
 const Allocator = std.mem.Allocator;
@@ -36,10 +40,16 @@ pub const OpenAi = struct {
         self: *const OpenAi,
         model_id: []const u8,
         diag: ?*provider.Diagnostics,
-    ) provider.Error!ChatLanguageModel {
-        // PHASE 8B SEAM: switch this default to the Responses API. Explicit
-        // `chat` remains Chat Completions.
-        return self.chat(model_id, diag);
+    ) provider.Error!ResponsesLanguageModel {
+        return self.responses(model_id, diag);
+    }
+
+    pub fn responses(
+        self: *const OpenAi,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!ResponsesLanguageModel {
+        return ResponsesLanguageModel.init(model_id, self.modelConfig(), diag);
     }
 
     pub fn embeddingModel(
@@ -96,7 +106,7 @@ pub const ProviderAdapter = struct {
         diag: ?*provider.Diagnostics,
     ) provider.Error!provider.LanguageModel {
         const self = fromRaw(raw);
-        const model = self.arena.create(ChatLanguageModel) catch return error.InvalidArgumentError;
+        const model = self.arena.create(ResponsesLanguageModel) catch return error.InvalidArgumentError;
         model.* = try self.factory.languageModel(model_id, diag);
         return model.languageModel();
     }
@@ -163,18 +173,20 @@ test "OpenAI factory normalizes base URL, provider ids, namespaces, and Provider
         .name = "custom.openai",
         .transport = transport,
     });
-    var chat = try factory.languageModel("gpt-4o-mini", null);
+    var responses = try factory.languageModel("gpt-4o-mini", null);
+    var chat = try factory.chat("gpt-4o-mini", null);
     var embedding = try factory.embeddingModel("text-embedding-3-small", null);
     try std.testing.expectEqualStrings("https://proxy.example/v1", factory.base_url);
+    try std.testing.expectEqualStrings("custom.openai.responses", responses.languageModel().provider());
     try std.testing.expectEqualStrings("custom.openai.chat", chat.languageModel().provider());
     try std.testing.expectEqualStrings("custom.openai.embedding", embedding.embeddingModel().provider());
-    try std.testing.expectEqualStrings("custom", chat.config.provider_options_name);
+    try std.testing.expectEqualStrings("custom", responses.config.provider_options_name);
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     var adapter = factory.providerAdapter(arena_state.allocator());
     const erased = adapter.asProvider();
-    try std.testing.expectEqualStrings("custom.openai.chat", (try erased.languageModel("gpt-4o-mini", null)).provider());
+    try std.testing.expectEqualStrings("custom.openai.responses", (try erased.languageModel("gpt-4o-mini", null)).provider());
     try std.testing.expectEqualStrings("custom.openai.embedding", (try erased.embeddingModel("text-embedding-3-small", null)).provider());
 }
 
