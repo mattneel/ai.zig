@@ -16,6 +16,7 @@ const registry = @import("registry.zig");
 const telemetry = @import("telemetry.zig");
 const tool_api = @import("tool.zig");
 const approval_signature = @import("tool_approval_signature.zig");
+const tool_common = @import("tool_execution_common.zig");
 const types = @import("generate_text_types.zig");
 
 const Allocator = std.mem.Allocator;
@@ -171,34 +172,9 @@ pub const PrepareStep = struct {
     }
 };
 
-pub const RepairToolCallOptions = struct {
-    tool_call: provider.GeneratedToolCall,
-    tools: tool_api.ToolSet,
-    instructions: ?prompt_api.Instructions,
-    messages: []const message.ModelMessage,
-    err: types.ToolCallError,
-};
-
-pub const RepairToolCall = struct {
-    ctx: ?*anyopaque = null,
-    repair_fn: *const fn (
-        ctx: ?*anyopaque,
-        io: std.Io,
-        arena: Allocator,
-        options: *const RepairToolCallOptions,
-    ) anyerror!?provider.GeneratedToolCall,
-};
-
-pub const RefineToolInput = struct {
-    tool_name: []const u8,
-    ctx: ?*anyopaque = null,
-    refine_fn: *const fn (
-        ctx: ?*anyopaque,
-        io: std.Io,
-        arena: Allocator,
-        input: std.json.Value,
-    ) anyerror!std.json.Value,
-};
+pub const RepairToolCallOptions = tool_common.RepairToolCallOptions;
+pub const RepairToolCall = tool_common.RepairToolCall;
+pub const RefineToolInput = tool_common.RefineToolInput;
 
 pub const OutputParseContext = struct {
     response: types.ResponseMetadata,
@@ -645,17 +621,7 @@ const ApprovalResolution = struct {
     denied_count: usize,
 };
 
-const ClientToolOutput = union(enum) {
-    result: TypedToolResult,
-    tool_error: TypedToolError,
-
-    fn toolCallId(self: ClientToolOutput) []const u8 {
-        return switch (self) {
-            .result => |value| value.tool_call_id,
-            .tool_error => |value| value.tool_call_id,
-        };
-    }
-};
+const ClientToolOutput = tool_common.ClientToolOutput;
 
 fn executeStep(
     state: *CallState,
@@ -995,150 +961,21 @@ fn parseToolCalls(
     return parsed.toOwnedSlice(state.arena);
 }
 
-const ParseAttempt = union(enum) {
-    success: TypedToolCall,
-    failure: types.ToolCallError,
-};
-
 fn parseToolCall(
     state: *CallState,
     original: provider.GeneratedToolCall,
     instructions: ?prompt_api.Instructions,
     messages: []const message.ModelMessage,
 ) provider.CallError!TypedToolCall {
-    var attempt = try doParseToolCall(state, original);
-    if (attempt == .failure and state.options.repair_tool_call != null) {
-        const original_error = attempt.failure;
-        if (original_error.kind == .no_such_tool or original_error.kind == .invalid_input) {
-            const repair = state.options.repair_tool_call.?;
-            const repair_options: RepairToolCallOptions = .{
-                .tool_call = original,
-                .tools = state.options.tools,
-                .instructions = instructions,
-                .messages = messages,
-                .err = original_error,
-            };
-            const repaired = repair.repair_fn(
-                repair.ctx,
-                state.io,
-                state.arena,
-                &repair_options,
-            ) catch |repair_error| {
-                attempt = .{ .failure = .{
-                    .kind = .repair_failed,
-                    .err = error.ToolCallRepairError,
-                    .message = try std.fmt.allocPrint(
-                        state.arena,
-                        "Tool call repair failed: {s}; original error: {s}",
-                        .{ @errorName(repair_error), original_error.message },
-                    ),
-                    .original_kind = original_error.kind,
-                } };
-                return invalidToolCall(state, original, attempt.failure);
-            };
-            if (repaired) |repaired_call| {
-                attempt = try doParseToolCall(state, repaired_call);
-            }
-        }
-    }
-
-    return switch (attempt) {
-        .success => |call| refineToolCall(state, call) catch |err| invalidToolCall(state, original, .{
-            .kind = .other,
-            .err = err,
-            .message = try std.fmt.allocPrint(state.arena, "Tool input refinement failed: {s}", .{@errorName(err)}),
-        }),
-        .failure => |failure| invalidToolCall(state, original, failure),
-    };
-}
-
-fn doParseToolCall(state: *CallState, call: provider.GeneratedToolCall) provider.CallError!ParseAttempt {
-    const selected = findTool(state.options.tools, call.tool_name);
-    if (selected == null and !(call.provider_executed == true and call.dynamic == true)) {
-        return .{ .failure = .{
-            .kind = .no_such_tool,
-            .err = error.NoSuchToolError,
-            .message = try std.fmt.allocPrint(state.arena, "No such tool: {s}", .{call.tool_name}),
-        } };
-    }
-
-    const parsed_input = if (std.mem.trim(u8, call.input, " \t\r\n").len == 0)
-        emptyJsonObject()
-    else switch (provider_utils.safeParseJson(std.json.Value, state.arena, call.input)) {
-        .success => |success| success.value,
-        .failure => |failure| return .{ .failure = .{
-            .kind = .invalid_input,
-            .err = error.InvalidToolInputError,
-            .message = try std.fmt.allocPrint(
-                state.arena,
-                "Invalid input for tool {s}: {s}",
-                .{ call.tool_name, failure.message },
-            ),
-        } },
-    };
-
-    if (selected) |named| {
-        if (named.tool.input_schema.validator) |validator| {
-            validator.validate(state.arena, parsed_input, null) catch {
-                return .{ .failure = .{
-                    .kind = .invalid_input,
-                    .err = error.InvalidToolInputError,
-                    .message = try std.fmt.allocPrint(
-                        state.arena,
-                        "Invalid input for tool {s}: schema validation failed",
-                        .{call.tool_name},
-                    ),
-                } };
-            };
-        }
-    }
-
-    return .{ .success = .{
-        .tool_call_id = try state.arena.dupe(u8, call.tool_call_id),
-        .tool_name = try state.arena.dupe(u8, call.tool_name),
-        .input = try provider_utils.cloneJsonValue(state.arena, parsed_input),
-        .provider_executed = call.provider_executed == true,
-        .provider_metadata = try cloneOptionalJson(state.arena, call.provider_metadata),
-        .tool_metadata = if (selected) |named| try cloneOptionalJson(state.arena, named.tool.metadata) else null,
-        .dynamic = call.dynamic == true or (if (selected) |named| named.tool.kind == .dynamic else true),
-    } };
-}
-
-fn refineToolCall(state: *CallState, call: TypedToolCall) anyerror!TypedToolCall {
-    const refinements = state.options.refine_tool_input orelse return call;
-    for (refinements) |refinement| {
-        if (!std.mem.eql(u8, refinement.tool_name, call.tool_name)) continue;
-        var refined = call;
-        refined.input = try provider_utils.cloneJsonValue(
-            state.arena,
-            try refinement.refine_fn(refinement.ctx, state.io, state.arena, call.input),
-        );
-        return refined;
-    }
-    return call;
-}
-
-fn invalidToolCall(
-    state: *CallState,
-    original: provider.GeneratedToolCall,
-    retained_error: types.ToolCallError,
-) provider.CallError!TypedToolCall {
-    const input: std.json.Value = switch (provider_utils.safeParseJson(std.json.Value, state.arena, original.input)) {
-        .success => |success| try provider_utils.cloneJsonValue(state.arena, success.value),
-        .failure => .{ .string = try state.arena.dupe(u8, original.input) },
-    };
-    const selected = findTool(state.options.tools, original.tool_name);
-    return .{
-        .tool_call_id = try state.arena.dupe(u8, original.tool_call_id),
-        .tool_name = try state.arena.dupe(u8, original.tool_name),
-        .input = input,
-        .provider_executed = original.provider_executed == true,
-        .provider_metadata = try cloneOptionalJson(state.arena, original.provider_metadata),
-        .tool_metadata = if (selected) |named| try cloneOptionalJson(state.arena, named.tool.metadata) else null,
-        .dynamic = true,
-        .invalid = true,
-        .err = retained_error,
-    };
+    return tool_common.parseToolCall(.{
+        .io = state.io,
+        .arena = state.arena,
+        .tools = state.options.tools,
+        .repair_tool_call = state.options.repair_tool_call,
+        .refine_tool_input = state.options.refine_tool_input,
+        .instructions = instructions,
+        .messages = messages,
+    }, original);
 }
 
 fn notifyInputAvailable(
@@ -1168,24 +1005,23 @@ fn resolveStepApprovals(
     var responses: std.ArrayList(types.ToolApprovalResponse) = .empty;
     defer responses.deinit(state.arena);
     var blocked: std.StringHashMapUnmanaged(void) = .empty;
-    const denied_count: usize = 0;
+    var denied_count: usize = 0;
 
     for (calls) |call| {
         if (call.invalid) continue;
         const named = findTool(state.options.tools, call.tool_name) orelse continue;
-        const needs_approval = switch (named.tool.needs_approval) {
-            .no => false,
-            .yes => true,
-            .resolver => |resolver| resolver.resolve(call.input, .{
-                .tool_call_id = call.tool_call_id,
-                .messages = messages,
-                .context = try validatedToolContext(state, named, tools_context),
-            }) catch |err| {
-                setInvalidApproval(state, call.tool_call_id);
-                return mapAnyError(state, err, "tool approval resolver failed");
-            },
+        const decision = tool_common.resolveToolApproval(.{
+            .arena = state.arena,
+            .named = named,
+            .tool_call = call,
+            .messages = messages,
+            .tools_context = tools_context,
+            .diag = state.options.diag,
+        }) catch |err| {
+            setInvalidApproval(state, call.tool_call_id);
+            return mapAnyError(state, err, "tool approval resolver failed");
         };
-        if (!needs_approval) continue;
+        if (decision == .not_applicable or decision == .approved) continue;
 
         const approval_id = try state.nextId();
         const signature = if (state.options.tool_approval_secret) |secret|
@@ -1202,9 +1038,20 @@ fn resolveStepApprovals(
         try requests.append(state.arena, .{
             .approval_id = approval_id,
             .tool_call = call,
+            .is_automatic = decision == .denied,
             .signature = signature,
         });
         try blocked.put(state.arena, call.tool_call_id, {});
+        if (decision == .denied) {
+            try responses.append(state.arena, .{
+                .approval_id = approval_id,
+                .tool_call = call,
+                .approved = false,
+                .reason = decision.denied,
+                .provider_executed = call.provider_executed,
+            });
+            denied_count += 1;
+        }
     }
 
     return .{
@@ -1220,17 +1067,7 @@ fn validatedToolContext(
     named: *const tool_api.NamedTool,
     tools_context: ?std.json.Value,
 ) provider.CallError!?std.json.Value {
-    const context: ?std.json.Value = if (tools_context) |all|
-        if (all == .object) all.object.get(named.name) else null
-    else
-        null;
-    if (named.tool.context_schema) |schema| {
-        const value = context orelse std.json.Value.null;
-        if (schema.validator) |validator| {
-            validator.validate(state.arena, value, state.options.diag) catch return error.TypeValidationError;
-        }
-    }
-    return cloneOptionalJson(state.arena, context);
+    return tool_common.validatedToolContext(state.arena, named, tools_context, state.options.diag);
 }
 
 fn updateDeferredCalls(
@@ -1259,8 +1096,7 @@ fn updateDeferredCalls(
 }
 
 fn findTool(tools: tool_api.ToolSet, name: []const u8) ?*const tool_api.NamedTool {
-    for (tools) |*named| if (std.mem.eql(u8, named.name, name)) return named;
-    return null;
+    return tool_common.findTool(tools, name);
 }
 
 fn emptyJsonObject() std.json.Value {
@@ -1614,44 +1450,21 @@ const ToolExecutionBatch = struct {
     timings: []const types.ToolExecutionTiming,
 };
 
-const ToolOperationResult = union(enum) {
-    value: std.json.Value,
-    failure: anyerror,
-};
-
 const ToolOperationContext = struct {
     job: *ToolJob,
 
-    fn run(self: ToolOperationContext) provider.CallError!ToolOperationResult {
-        const execute = self.job.named.tool.execute.?;
-        const output = execute.execute(
-            self.job.state.io,
-            self.job.arena_state.allocator(),
-            self.job.call.input,
-            .{
-                .tool_call_id = self.job.call.tool_call_id,
-                .messages = self.job.messages,
-                .context = self.job.tool_context,
-            },
-        ) catch |err| {
-            if (err == error.Canceled) return error.Canceled;
-            return .{ .failure = err };
-        };
-        return switch (output) {
-            .value => |value| .{ .value = value },
-            .stream => |stream| blk: {
-                defer stream.deinit(self.job.state.io);
-                var final_value: std.json.Value = .null;
-                while (stream.next(self.job.state.io) catch |err| {
-                    if (err == error.Canceled) return error.Canceled;
-                    return .{ .failure = err };
-                }) |value| {
-                    // Preliminary values intentionally disappear in generateText.
-                    // Phase 5's stream pipeline will forward them as parts.
-                    final_value = value;
-                }
-                break :blk .{ .value = final_value };
-            },
+    fn run(self: ToolOperationContext) provider.CallError!?tool_common.ExecutionResult {
+        return tool_common.executeToolCall(.{
+            .io = self.job.state.io,
+            .arena = self.job.arena_state.allocator(),
+            .call = self.job.call,
+            .named = self.job.named,
+            .messages = self.job.messages,
+            .tool_context = self.job.tool_context,
+        }) catch |err| switch (err) {
+            error.Canceled => error.Canceled,
+            error.OutOfMemory => error.OutOfMemory,
+            error.Closed => error.InvalidStreamPartError,
         };
     }
 };
@@ -1692,7 +1505,7 @@ const ToolJob = struct {
 
         const started = std.Io.Timestamp.now(self.state.io, .awake);
         const operation = runWithTimeout(
-            ToolOperationResult,
+            ?tool_common.ExecutionResult,
             self.state.io,
             self.timeout_ms,
             ToolOperationContext{ .job = self },
@@ -1703,43 +1516,12 @@ const ToolJob = struct {
             self.fatal_error = err;
             return;
         };
-        self.duration_ms = elapsedMilliseconds(started, std.Io.Timestamp.now(self.state.io, .awake));
-
-        const worker_arena = self.arena_state.allocator();
-        const event_output: events.ToolExecutionOutput = switch (operation) {
-            .value => |value| blk: {
-                const cloned = provider_utils.cloneJsonValue(worker_arena, value) catch {
-                    self.fatal_error = error.OutOfMemory;
-                    return;
-                };
-                self.output = .{ .result = .{
-                    .tool_call_id = self.call.tool_call_id,
-                    .tool_name = self.call.tool_name,
-                    .input = self.call.input,
-                    .output = cloned,
-                    .provider_metadata = self.call.provider_metadata,
-                    .tool_metadata = self.call.tool_metadata,
-                    .dynamic = self.call.dynamic,
-                } };
-                break :blk .{ .result = cloned };
-            },
-            .failure => |err| blk: {
-                const error_text = worker_arena.dupe(u8, @errorName(err)) catch {
-                    self.fatal_error = error.OutOfMemory;
-                    return;
-                };
-                self.output = .{ .tool_error = .{
-                    .tool_call_id = self.call.tool_call_id,
-                    .tool_name = self.call.tool_name,
-                    .input = self.call.input,
-                    .error_value = .{ .string = error_text },
-                    .error_code = err,
-                    .provider_metadata = self.call.provider_metadata,
-                    .tool_metadata = self.call.tool_metadata,
-                    .dynamic = self.call.dynamic,
-                } };
-                break :blk .{ .err = err };
-            },
+        const result = operation orelse return;
+        self.duration_ms = result.tool_execution_ms;
+        self.output = result.output;
+        const event_output: events.ToolExecutionOutput = switch (result.output) {
+            .result => |value| .{ .result = value.output },
+            .tool_error => |value| .{ .err = value.error_code orelse error.InvalidToolInputError },
         };
 
         const end_event: events.ToolExecutionEndEvent = .{
@@ -1821,7 +1603,7 @@ fn executeToolCalls(
     for (active_jobs) |*job| {
         if (job.fatal_error) |err| return err;
         const output = job.output orelse continue;
-        const cloned = try cloneClientOutput(state.arena, output);
+        const cloned = try tool_common.cloneClientOutput(state.arena, output);
         try outputs.append(state.arena, cloned);
         try timings.append(state.arena, .{
             .tool_call_id = cloned.toolCallId(),
@@ -1831,33 +1613,6 @@ fn executeToolCalls(
     return .{
         .outputs = try outputs.toOwnedSlice(state.arena),
         .timings = try timings.toOwnedSlice(state.arena),
-    };
-}
-
-fn cloneClientOutput(arena: Allocator, output: ClientToolOutput) Allocator.Error!ClientToolOutput {
-    return switch (output) {
-        .result => |value| .{ .result = .{
-            .tool_call_id = try arena.dupe(u8, value.tool_call_id),
-            .tool_name = try arena.dupe(u8, value.tool_name),
-            .input = if (value.input) |input| try provider_utils.cloneJsonValue(arena, input) else null,
-            .output = try provider_utils.cloneJsonValue(arena, value.output),
-            .provider_executed = value.provider_executed,
-            .provider_metadata = try cloneOptionalJson(arena, value.provider_metadata),
-            .tool_metadata = try cloneOptionalJson(arena, value.tool_metadata),
-            .dynamic = value.dynamic,
-            .preliminary = value.preliminary,
-        } },
-        .tool_error => |value| .{ .tool_error = .{
-            .tool_call_id = try arena.dupe(u8, value.tool_call_id),
-            .tool_name = try arena.dupe(u8, value.tool_name),
-            .input = if (value.input) |input| try provider_utils.cloneJsonValue(arena, input) else null,
-            .error_value = try provider_utils.cloneJsonValue(arena, value.error_value),
-            .error_code = value.error_code,
-            .provider_executed = value.provider_executed,
-            .provider_metadata = try cloneOptionalJson(arena, value.provider_metadata),
-            .tool_metadata = try cloneOptionalJson(arena, value.tool_metadata),
-            .dynamic = value.dynamic,
-        } },
     };
 }
 

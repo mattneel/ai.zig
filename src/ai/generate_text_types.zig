@@ -98,6 +98,16 @@ pub const ToolExecutionTiming = struct {
     milliseconds: f64,
 };
 
+/// Nearest-rank timing summary for gaps between generated output chunks.
+pub const ChunkTimingStats = struct {
+    min: f64,
+    p10: f64,
+    median: f64,
+    avg: f64,
+    p90: f64,
+    max: f64,
+};
+
 pub const StepPerformance = struct {
     effective_output_tokens_per_second: f64,
     output_tokens_per_second: ?f64 = null,
@@ -107,6 +117,7 @@ pub const StepPerformance = struct {
     response_time_ms: f64,
     tool_execution_ms: []const ToolExecutionTiming = &.{},
     time_to_first_output_ms: ?f64 = null,
+    time_between_output_chunks_ms: ?ChunkTimingStats = null,
 };
 
 pub const RequestMetadata = struct {

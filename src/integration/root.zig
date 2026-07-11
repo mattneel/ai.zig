@@ -1137,6 +1137,109 @@ test "integration anthropic tool stream accumulates input_json_delta and normali
     try std.testing.expectEqualStrings("{}", calls.items[1]);
 }
 
+test "integration anthropic tool SSE flows through model callbacks and execution stages" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-tool-stage\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-haiku-20240307\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":2},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-stage-1\",\"name\":\"test-tool\",\"input\":{}}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\":\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Sparkle Day\\\"}\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":1}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":15}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-3-haiku-20240307", null);
+
+    const Executor = struct {
+        calls: usize = 0,
+        fn run(
+            raw: ?*anyopaque,
+            _: std.Io,
+            _: std.mem.Allocator,
+            input: std.json.Value,
+            _: ai.tool.ToolExecutionOptions,
+        ) anyerror!ai.tool.ToolOutput {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.calls += 1;
+            try std.testing.expectEqualStrings("Sparkle Day", input.object.get("value").?.string);
+            return .{ .value = .{ .string = "executed" } };
+        }
+    };
+    var executor: Executor = .{};
+    const tools = [_]ai.NamedTool{.{ .name = "test-tool", .tool = .{
+        .input_schema = provider_utils.schemaFromType(struct { value: []const u8 }),
+        .execute = .{ .ctx = &executor, .execute_fn = Executor.run },
+    } }};
+    const app_messages = [_]ai.ModelMessage{.{ .user = .{ .content = .{ .text = "Hello" } } }};
+    const stage1 = try ai.stream.model_call.streamLanguageModelCall(io, allocator, arena, .{
+        .model = .{ .model = chat.languageModel() },
+        .messages = &app_messages,
+        .tools = &tools,
+        .transport = client.transport(),
+    });
+    const stage2 = try ai.stream.tool_callbacks.invokeToolCallbacksFromStream(arena, .{
+        .upstream = stage1.stage,
+        .tools = &tools,
+        .messages = &app_messages,
+    });
+    var output_buffer: [4]ai.LanguageModelStreamPart = undefined;
+    const stage3 = try ai.stream.tool_execution.executeToolsFromStream(io, allocator, arena, .{
+        .upstream = stage2,
+        .output_buffer = &output_buffer,
+        .tools = &tools,
+        .call_id = "integration-call",
+        .messages = &app_messages,
+    });
+    defer stage3.deinit(io);
+
+    var tags: std.ArrayList(std.meta.Tag(ai.LanguageModelStreamPart)) = .empty;
+    defer tags.deinit(allocator);
+    var final_output: ?[]const u8 = null;
+    while (try stage3.next(io)) |part| {
+        try tags.append(allocator, std.meta.activeTag(part));
+        if (part == .tool_result and !part.tool_result.preliminary) final_output = part.tool_result.output.string;
+    }
+    try std.testing.expectEqualSlices(
+        std.meta.Tag(ai.LanguageModelStreamPart),
+        &.{
+            .model_call_start,
+            .model_call_response_metadata,
+            .tool_input_start,
+            .tool_input_delta,
+            .tool_input_delta,
+            .tool_input_delta,
+            .tool_input_end,
+            .tool_call,
+            .model_call_end,
+            .tool_execution_end,
+            .tool_result,
+        },
+        tags.items,
+    );
+    try std.testing.expectEqual(1, executor.calls);
+    try std.testing.expectEqualStrings("executed", final_output.?);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "integration anthropic thinking stream carries signature provider metadata" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

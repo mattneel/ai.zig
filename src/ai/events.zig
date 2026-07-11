@@ -66,8 +66,11 @@ pub const LanguageModelCallStartEvent = struct {
 pub const Performance = struct {
     response_time_ms: f64,
     effective_output_tokens_per_second: f64,
+    output_tokens_per_second: ?f64 = null,
+    input_tokens_per_second: ?f64 = null,
     effective_total_tokens_per_second: f64,
     time_to_first_output_ms: ?f64 = null,
+    time_between_output_chunks_ms: ?text_types.ChunkTimingStats = null,
 };
 
 pub const LanguageModelCallEndEvent = struct {
