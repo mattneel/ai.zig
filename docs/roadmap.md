@@ -295,8 +295,9 @@ tree.
 - Every phase ports the relevant upstream *tests*, not just code.
 - Live-API tests are opt-in (`-Dlive` + env keys), never in default CI.
   Real keys for smoke tests live in `~/src/rctr/.env` (`export`-format;
-  currently `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) — source it for live
-  runs; never commit, copy, or print values. OpenRouter gives one-key
-  coverage of many vendors once `OPENROUTER_API_KEY` is added there.
+  currently `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
+  `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`) — source it for live runs; never
+  commit, copy, or print values. OpenRouter now gives one-key coverage of
+  many vendors through `OPENROUTER_API_KEY`.
 - Upstream tracks a moving target: `inspiration/` is re-pinned deliberately,
   with a diff review of `packages/provider` (spec changes ripple furthest).

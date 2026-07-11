@@ -6,6 +6,7 @@ const openai = @import("openai");
 const openai_compatible = @import("openai_compatible");
 const anthropic = @import("anthropic");
 const openrouter = @import("openrouter");
+const xai = @import("xai");
 const ai = @import("ai");
 const build_options = @import("build_options");
 
@@ -2587,6 +2588,279 @@ test "live native OpenAI Chat generate and stream smoke" {
     try std.testing.expect(saw_finish);
     std.debug.print(
         "live native OpenAI Chat: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live xAI Grok generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live xAI Grok smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "XAI_API_KEY") orelse {
+        std.debug.print("live xAI Grok smoke skipped: XAI_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = xai.createXai(.{
+        .allocator = allocator,
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "grok-3-mini";
+    var chat = try factory.chatModel(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{
+        .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }},
+    } }};
+    const options: provider.CallOptions = .{
+        .prompt = &prompt,
+        .max_output_tokens = 32,
+    };
+
+    var generate_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena_state.deinit();
+    const generated = try chat.languageModel().doGenerate(
+        io,
+        generate_arena_state.allocator(),
+        &options,
+        null,
+    );
+    var generated_text_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_text_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_text_bytes > 0);
+    try std.testing.expect(
+        generated.finish_reason.unified == .stop or
+            generated.finish_reason.unified == .length,
+    );
+
+    var stream_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena_state.deinit();
+    const streamed = try chat.languageModel().doStream(
+        io,
+        stream_arena_state.allocator(),
+        &options,
+        null,
+    );
+    defer streamed.stream.deinit(io);
+    var stream_parts: usize = 0;
+    var text_deltas: usize = 0;
+    var streamed_text_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        stream_parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                text_deltas += 1;
+                streamed_text_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveXaiProviderStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(text_deltas > 0);
+    try std.testing.expect(streamed_text_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live xAI Grok: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live Google Gemini OpenAI-compatible generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Google Gemini OpenAI-compatible smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "GOOGLE_API_KEY") orelse {
+        std.debug.print("live Google Gemini OpenAI-compatible smoke skipped: GOOGLE_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = openai_compatible.createOpenAiCompatible(.{
+        .provider_name = "google.chat",
+        .base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "gemini-2.5-flash";
+    var chat = try factory.chatModel(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{
+        .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }},
+    } }};
+    const options: provider.CallOptions = .{
+        .prompt = &prompt,
+        .max_output_tokens = 32,
+    };
+
+    var generate_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena_state.deinit();
+    const generated = try chat.languageModel().doGenerate(
+        io,
+        generate_arena_state.allocator(),
+        &options,
+        null,
+    );
+    var generated_text_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_text_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_text_bytes > 0);
+    try std.testing.expect(
+        generated.finish_reason.unified == .stop or
+            generated.finish_reason.unified == .length,
+    );
+
+    var stream_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena_state.deinit();
+    const streamed = try chat.languageModel().doStream(
+        io,
+        stream_arena_state.allocator(),
+        &options,
+        null,
+    );
+    defer streamed.stream.deinit(io);
+    var stream_parts: usize = 0;
+    var text_deltas: usize = 0;
+    var streamed_text_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        stream_parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                text_deltas += 1;
+                streamed_text_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveGoogleProviderStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(text_deltas > 0);
+    try std.testing.expect(streamed_text_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live Google Gemini OpenAI-compatible: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live OpenRouter generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live OpenRouter smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENROUTER_API_KEY") orelse {
+        std.debug.print("live OpenRouter smoke skipped: OPENROUTER_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var factory = openrouter.createOpenRouter(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "openai/gpt-4o-mini";
+    var chat = try factory.chatModel(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{
+        .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }},
+    } }};
+    const options: provider.CallOptions = .{
+        .prompt = &prompt,
+        .max_output_tokens = 32,
+    };
+
+    var generate_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena_state.deinit();
+    const generated = try chat.languageModel().doGenerate(
+        io,
+        generate_arena_state.allocator(),
+        &options,
+        null,
+    );
+    var generated_text_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_text_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_text_bytes > 0);
+    try std.testing.expect(
+        generated.finish_reason.unified == .stop or
+            generated.finish_reason.unified == .length,
+    );
+
+    var stream_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena_state.deinit();
+    const streamed = try chat.languageModel().doStream(
+        io,
+        stream_arena_state.allocator(),
+        &options,
+        null,
+    );
+    defer streamed.stream.deinit(io);
+    var stream_parts: usize = 0;
+    var text_deltas: usize = 0;
+    var streamed_text_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        stream_parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                text_deltas += 1;
+                streamed_text_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveOpenRouterProviderStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(text_deltas > 0);
+    try std.testing.expect(streamed_text_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live OpenRouter: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
         .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
     );
 }
