@@ -140,4 +140,10 @@ Design constraints this imposes on the core:
   fidelity ledger (`docs/porting-guide.md` §18) in the same change.
 - `zig build test` must pass before any commit.
 - No third-party Zig dependencies without prior discussion — the stdlib's
-  HTTP client, TLS, and JSON are the default answer.
+  HTTP client, TLS, and JSON are the default answer. Pre-approved
+  exception: vendoring **miniaudio** (single-file C) for the *optional*
+  native audio capture/playback module, if/when realtime demos need it.
+- Live-API smoke tests are opt-in (`-Dlive`) and read real keys from
+  `~/src/rctr/.env` (`export`-format: `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, …). Source it when running live tests; never commit,
+  copy into the repo, or print its values.

@@ -1,7 +1,7 @@
 # Roadmap
 
 Phased implementation plan. Ordering is forced by the upstream dependency
-spine (`provider` → `provider_utils` → providers/`gateway` → `ai`) plus two
+spine (`provider` → `provider_utils` → providers → `ai`) plus two
 project-specific constraints: the telemetry dispatcher must exist before
 `generateText` is ported (~60 call sites, cannot be retrofitted), and the
 C ABI gets an early vertical slice (Phase 6) so FFI constraints stay honest
@@ -18,7 +18,8 @@ sizing signal, not a target.
 **Goal:** the skeleton everything else lands in.
 
 - `build.zig` exposing named modules (`provider`, `provider_utils`, `ai`,
-  `openai_compatible`, `anthropic`, `openai`, `gateway`, `mcp`, `ffi`) with
+  `openai_compatible`, `openrouter`, `anthropic`, `openai`, `mcp`, `ffi`)
+  with
   per-module test steps aggregated under `zig build test`
   (`-Dtest-filter` supported).
 - Error set + `Diagnostics` payload union (the ~35 upstream error names with
@@ -45,8 +46,8 @@ serve a canned SSE stream consumed by a test client.
   parts), reranking, video, files/skills, realtime event codec unions.
   ProviderV4 vtable.
 - JSON (de)serializers for every union with stable tag↔wire-string mapping.
-  These serializers double as the gateway codec later — treat them as
-  canonical.
+  Treat them as canonical — they are the SDK's wire vocabulary (and would
+  double as a gateway codec if that module is ever added).
 
 **Accept:** round-trip (parse → serialize → parse) fixture tests using JSON
 captured from upstream test fixtures; exhaustive-switch compile guarantees on
@@ -84,6 +85,10 @@ the mock server and consumes a chunked SSE stream incrementally (the
 - `openai_compatible` chat model (the vendor template: pluggable error
   structure, unknown-option passthrough, reasoning_content handling,
   indexed tool-call delta tracker).
+- `openrouter` thin wrapper over it (base URL, `OPENROUTER_API_KEY`,
+  attribution headers) — the future default provider for string model ids
+  (porting-guide §11), and the cheapest way to smoke-test many vendors
+  through one endpoint.
 - `anthropic` (richest single-endpoint provider): factory, capabilities
   table, prompt conversion (system blocks, cache_control, thinking
   signatures, tool_use reconstruction), betas set → header, SSE event → part
@@ -111,8 +116,10 @@ streams a real completion. `zig build test-anthropic` green.
   (HMAC signing), concurrent tool execution (Io.Group), asContent
   interleaving, toResponseMessages (deep-clone into call arena), usage
   accumulation, output parsing gate.
-- Registry, customProvider, resolve-model with pluggable default provider;
-  wrapLanguageModel + defaultSettings/addToolInputExamples middleware.
+- Registry, customProvider, resolve-model with the pluggable default
+  provider (built-in default: `openrouter`, comptime-gated, runtime
+  overridable); wrapLanguageModel + defaultSettings/addToolInputExamples
+  middleware.
 
 **Accept:** ported upstream generate-text test contracts (multi-step loop,
 tool errors as data, deferred provider tools, stop conditions, callback
@@ -168,18 +175,17 @@ ABI-lock test green; both artifacts build (`zig build`).
 **Accept:** ported generate-object/embed test suites; partial-object stream
 fixtures produce identical partial sequences. 
 
-## Phase 8 — Agent, gateway, `openai` full
+## Phase 8 — Agent + `openai` full
 
 - ToolLoopAgent (settings, prepareCall, callback merging, default
   stopWhen=stepCount(20)), agent UI-stream helpers.
-- `gateway` module: language + embedding models, auth (api-key/OIDC),
-  metadata cache (stale-while-revalidate + single-flight), GatewayError
-  taxonomy, o11y headers; register as installable default provider.
 - `openai` native package: Chat + Responses APIs (item-based stream mapping,
   reasoning summary lifecycle, item_reference optimization), embeddings.
 
-**Accept:** agent loop tests; gateway fixture tests (wire = normalized types);
-OpenAI Responses stream mapping fixtures.
+(No gateway module — skipped by design, porting-guide §11; the
+default-provider registration seam from Phase 4 is the replacement.)
+
+**Accept:** agent loop tests; OpenAI Responses stream mapping fixtures.
 
 ## Phase 9 — UI message stream, Chat, MCP
 
@@ -215,9 +221,10 @@ suites ported.
   large messages, recv task + mutex-guarded writer, keepalive) — spec in
   `research/gap-realtime-websocket.md`.
 - Realtime: event reducer, session (tool gating, barge-in), transport vtable,
-  audio utils (PCM16/base64/resample); OpenAI realtime codec + gateway
-  identity codec + subprotocol auth; streaming transcription (openai
-  realtime WS path) unlocked here too.
+  audio utils (PCM16/base64/resample); OpenAI realtime codec with
+  subprotocol auth; streaming transcription (openai realtime WS path)
+  unlocked here too. Native capture/playback (if wanted for a demo) comes
+  from vendoring miniaudio as an optional leaf module — not core.
 
 **Accept:** reducer/session contract tests; WS client interop test against
 the mock server's WebSocket upgrade (std.http.Server supports it); gated
@@ -244,5 +251,9 @@ wrapper; provider conformance fixtures shared across vendors.
   any new deviation.
 - Every phase ports the relevant upstream *tests*, not just code.
 - Live-API tests are opt-in (`-Dlive` + env keys), never in default CI.
+  Real keys for smoke tests live in `~/src/rctr/.env` (`export`-format;
+  currently `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) — source it for live
+  runs; never commit, copy, or print values. OpenRouter gives one-key
+  coverage of many vendors once `OPENROUTER_API_KEY` is added there.
 - Upstream tracks a moving target: `inspiration/` is re-pinned deliberately,
   with a diff review of `packages/provider` (spec changes ripple furthest).

@@ -19,7 +19,7 @@ upstream source, and treat these as maps rather than the territory.
 | [sdk-provider-utils.md](sdk-provider-utils.md) | HTTP helpers, SSE parsing algorithm, retry/backoff, secure JSON, schema/validator, SSRF guards |
 | [sdk-providers-concrete.md](sdk-providers-concrete.md) | anthropic + openai (Chat & Responses) + openai-compatible: the provider recipe, event→part mapping tables |
 | [sdk-streams-ui-mcp.md](sdk-streams-ui-mcp.md) | UI message stream wire protocol, Chat state machine, tool machinery, MCP client + 3 transports |
-| [gap-gateway.md](gap-gateway.md) | gateway auth/metadata/errors; the 5 static couplings from `ai` core |
+| [gap-gateway.md](gap-gateway.md) | gateway auth/metadata/errors; the 5 static couplings from `ai` core — **module skipped by decision** (porting-guide §11), kept as reference |
 | [gap-telemetry-logger.md](gap-telemetry-logger.md) | Telemetry vtable contract, dispatcher semantics, tracingChannel protocol, logWarnings, otel span inventory |
 | [gap-media-upload.md](gap-media-upload.md) | generateImage/Speech/Video, transcribe, uploads, multipart requirements, provider polling pattern |
 | [gap-realtime-websocket.md](gap-realtime-websocket.md) | realtime session/reducer/codec + a complete wss:// client recipe for Zig 0.16 |

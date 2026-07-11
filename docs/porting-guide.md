@@ -19,12 +19,14 @@ out of scope.
 ```
 1. @ai-sdk/provider        (225 files /  9.5k LOC)  pure spec, zero deps
 2. @ai-sdk/provider-utils  (142 files /  7.9k LOC)  HTTP/SSE/JSON/retry plumbing
-3. @ai-sdk/gateway         ( 47 files /  4.9k LOC)  HARD dep of `ai` (string model ids)
-   @ai-sdk/openai-compatible (25 / 2.9k)            parent of ~12 thin providers
+3. @ai-sdk/openai-compatible (25 / 2.9k)            parent of ~12 thin providers
    native providers (anthropic 10.4k, openai 13.2k, google 11.8k, …)
 4. ai                      (321 files / 36.5k LOC)  generateText/streamText/objects/agent/ui-stream/media
    @ai-sdk/mcp             ( 20 files /  5.3k LOC)  JSON-RPC client, 3 transports
 ```
+
+(Upstream also has `@ai-sdk/gateway` — a hard dependency of `ai` — which
+this port **skips entirely**; see the quirk below and ledger item 9.)
 
 Classification of the rest (see `research/sdk-inventory.md` for the full
 census): 40 packages are concrete providers following one identical adapter
@@ -38,11 +40,19 @@ every upstream test suite depends on it.
 Two upstream quirks that shape the port:
 
 - **`ai` hard-imports `@ai-sdk/gateway`** (default global provider for string
-  model ids like `"anthropic/claude-opus-4.6"`). In Zig, make the default
-  provider an explicit registration (settable vtable pointer) instead of a
-  hard link dependency; the gateway module implements it. Porting gateway is
-  cheap: its wire format *is* the JSON serialization of the normalized
-  CallOptions/StreamParts (see §11).
+  model ids like `"anthropic/claude-opus-4.6"`) — a client for Vercel's
+  hosted, paid proxy service. **This port skips gateway entirely and makes
+  OpenRouter the default provider** (ledger item 9). OpenRouter fills the
+  same role — an aggregator speaking `"vendor/model"` string ids — but is a
+  trivial `openai_compatible` wrapper rather than a bespoke protocol. The
+  default provider is a settable registration (vtable pointer) whose
+  built-in value is the `openrouter` module, comptime-gated by a build
+  option so apps that never use string ids can compile it out; runtime
+  registration overrides it. `GatewayError` special-cases in retry and
+  error wrapping are dropped — `APICallError.isRetryable` covers retry.
+  (If a Vercel-gateway module is ever wanted, its wire format *is* the JSON
+  serialization of the normalized CallOptions/StreamParts, so the Phase-1
+  serializers already implement its codec; see `research/gap-gateway.md`.)
 - **Errors are data.** Stream errors, tool errors, invalid tool calls, and
   aborts flow through streams as typed parts, not exceptions. Only machinery
   failures throw. This is a gift to Zig — model them as union variants.
@@ -299,8 +309,9 @@ carry no payload, so:
   equivalent formats them.
 - `isRetryable` default: statusCode ∈ {408, 409, 429} or ≥500; connection
   failures retryable.
-- Gateway needs only `{status_code, error_type enum, is_retryable,
-  generation_id?, message}` in core (retry + wrapGatewayError contract).
+- Upstream's `GatewayError` handling in retry/error-wrapping is dropped with
+  the gateway (ledger item 9); `APICallError.isRetryable` is the sole retry
+  gate.
 - C ABI: stable `enum(c_int)` status codes + `ai_last_error_*` getters (§15).
 
 ## 10. Provider implementation recipe
@@ -334,18 +345,31 @@ full mapping tables in `research/sdk-providers-concrete.md`):
 
 Port `openai-compatible` early — it unlocks ~12 vendors nearly for free.
 
-## 11. Gateway module
+## 11. Gateway: skipped — OpenRouter is the default provider
 
-Wire body for `/language-model` *is* the JSON serialization of normalized
-CallOptions (minus abortSignal, binary file data base64-encoded — copy, do
-not mutate the caller's prompt as upstream does); the SSE stream *is*
-normalized StreamParts verbatim. So the port's canonical (de)serializers
-double as the gateway codec. Auth: `AI_GATEWAY_API_KEY` else OIDC token
-(`VERCEL_OIDC_TOKEN`), method echoed in `ai-gateway-auth-method`; protocol
-headers `ai-gateway-protocol-version: 0.0.1`,
-`ai-language-model-{specification-version,id,streaming}`. Metadata endpoint
-cached with stale-while-revalidate + single-flight (mutex + generation
-counter). Details: `research/gap-gateway.md`.
+`@ai-sdk/gateway` (the client for Vercel's hosted AI Gateway service) is
+**out of scope** — ledger item 9. Its role — resolving bare
+`"vendor/model"` string ids — goes to an **`openrouter`** module instead:
+
+- A thin `openai_compatible` wrapper: base URL
+  `https://openrouter.ai/api/v1`, `OPENROUTER_API_KEY` (call-time env
+  fallback like every provider), bearer auth, optional `HTTP-Referer` /
+  `X-Title` attribution headers, model ids already in `vendor/model` form.
+  It costs a config struct, not a protocol implementation.
+- `ai` core's default provider is a settable registration whose built-in
+  value is `openrouter`, behind a build option (comptime-gated) so it can
+  be compiled out; runtime registration (any provider or registry)
+  overrides it. Without a key or with the option off, string ids →
+  `NoSuchProviderError` / `LoadAPIKeyError` with a set-`OPENROUTER_API_KEY`
+  hint (replacing upstream's `wrapGatewayError` guidance).
+- Retry gates on `APICallError.isRetryable` only; `GatewayModelId`'s
+  string-literal union was always plain `[]const u8` here; gateway realtime
+  subprotocol auth is skipped with it (OpenAI realtime codec unaffected).
+
+If a Vercel-gateway module is ever wanted, it is a cheap add-on: its wire
+format is the JSON serialization of normalized CallOptions/StreamParts (the
+Phase-1 serializers), plus bearer auth and a metadata cache. Full internals
+are preserved in `research/gap-gateway.md`.
 
 ## 12. UI message stream, MCP, realtime
 
@@ -371,7 +395,10 @@ counter). Details: `research/gap-gateway.md`.
   math), the V4 event codec unions, and PCM16/base64/resample audio utils.
   Transport = the §7 WebSocket client behind a `RealtimeTransport` vtable
   (upstream hard-wires the browser transport — invert that). Audio
-  capture/playback is host-provided across the FFI.
+  capture/playback is host-provided across the FFI by default; if native
+  capture/playback is ever wanted (e.g. a realtime CLI demo), vendor
+  **miniaudio** (single-file C, public-domain, builds via `zig cc` /
+  `addCSourceFile`) as an optional leaf module — never a core dependency.
 
 ## 13. Media, files, telemetry, misc
 
@@ -468,7 +495,7 @@ research (`research/prototypes/cabi/`, findings in
 ## 16. Build and packaging
 
 - One root `build.zig` exposing named modules mirroring the npm graph:
-  `provider`, `provider_utils`, `gateway`, `ai`, `openai`, `anthropic`,
+  `provider`, `provider_utils`, `ai`, `openai`, `anthropic`,
   `openai_compatible`, `mcp`, wired with `mod.addImport`.
 - C ABI artifact: two `b.addLibrary` calls (`.linkage = .static` with
   `bundle_compiler_rt = true`, and `.dynamic` with `.version` for the
@@ -506,5 +533,9 @@ Track every deviation here; anything not listed is a bug.
 7. `tee()` unbounded buffering → Broadcast log with per-consumer cursors
    (same observable semantics; memory = consumer lag, as upstream).
 8. Node `diagnostics_channel` → optional comptime-gated span channel.
-9. Gateway hard-import in core → explicit default-provider registration.
+9. `@ai-sdk/gateway` skipped entirely (client for Vercel's paid proxy
+   service). Bare string model ids default to the `openrouter` module
+   (thin openai_compatible wrapper) via a comptime-gated, runtime-overridable
+   default-provider registration; `GatewayError` retry/error special-cases
+   dropped.
 10. JS runtime user-agent suffixes (`runtime/node.js/…`) → `runtime/zig/…`.

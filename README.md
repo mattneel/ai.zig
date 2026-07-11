@@ -59,18 +59,19 @@ The Zig module graph mirrors the npm dependency spine:
 
 ```
 ai ───────────────┬──▶ provider_utils ──▶ provider        (pure spec: types + vtables)
-  └──▶ gateway ───┤
-providers/* ──────┘        openai, anthropic, google, openai_compatible, …
-mcp ──────────────┘
+providers/* ──────┤        openrouter (default), openai, anthropic, google,
+mcp ──────────────┘        openai_compatible, …
 ffi (libai.a / libai.so + ai.h) ──▶ ai                    (C ABI over everything)
 ```
+
+(Upstream's `@ai-sdk/gateway` — Vercel's hosted proxy — is skipped; bare
+`"vendor/model"` string ids resolve through a thin **OpenRouter** provider
+by default, overridable and compile-out-able. See porting guide §11.)
 
 - **`provider`** — the specification: `LanguageModelV4` et al., the 21-variant
   stream-part union, prompt/content types, usage, errors. Pure data + vtables.
 - **`provider_utils`** — HTTP transport over `std.http.Client`, SSE decoder,
   retry with backoff, safe JSON, schema abstraction, id generation.
-- **`gateway`** — Vercel AI Gateway provider (the upstream default for string
-  model ids; wire format *is* the normalized SDK types).
 - **`ai`** — `generateText`/`streamText` (multi-step tool loop),
   `generateObject`/`streamObject`, `embed`/`embedMany`, `rerank`, Agent,
   middleware, registry, UI message stream protocol, media generation.
