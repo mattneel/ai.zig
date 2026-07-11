@@ -1,6 +1,8 @@
 # Porting guide: Vercel AI SDK → Zig 0.16
 
-This is the concrete design document for the port. It compresses the deep
+This is the concrete design document for the port (an independent,
+parity-focused implementation — see README "What parity means here" and
+docs/contracts.md for the user-facing contracts). It compresses the deep
 research in [`docs/research/`](research/) into decisions and recipes. When a
 claim here seems surprising, the research reports carry the file-level
 evidence; when code is being written, the upstream sources and their tests in

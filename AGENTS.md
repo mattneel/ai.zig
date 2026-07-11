@@ -4,14 +4,19 @@ Instructions for all agents working in this repository.
 
 ## Objective
 
-A **1:1 port of the Vercel AI SDK to Zig 0.16**, built on Zig's new `std.Io`
-model, plus a **C ABI (FFI) layer** with language-idiomatic wrappers
-(Python, Rust, etc.) on top of it.
+An **independent, parity-focused implementation of the Vercel AI SDK v7
+core for Zig 0.16**, built on Zig's new `std.Io` model, plus a **C ABI
+(FFI) layer** with language-idiomatic wrappers (Python, Rust, etc.) on top.
 
-"1:1" means feature parity and conceptual parity — same capabilities, same
-mental model (`generateText`, `streamText`, `generateObject`, `embed`, tool
-calling, agent loop, provider abstraction, middleware) — expressed in
-idiomatic Zig, not transliterated TypeScript.
+"Parity" is tiered, and the tiers are the contract (README "What parity
+means here" + docs/contracts.md): provider **wire parity**, core
+**behavioral parity** (upstream test contracts ported as Zig tests),
+**conceptual API parity** (canonical names only), **intentional Zig
+adaptations** (each itemized in the porting guide's fidelity ledger), and
+an explicit **unsupported-surfaces** list. Do not describe the project as
+a "1:1 port" in docs or commit messages — that phrase overpromises and is
+retired. When you deviate from upstream, ledger it; when you can't decide,
+match upstream.
 
 ## Non-negotiables
 

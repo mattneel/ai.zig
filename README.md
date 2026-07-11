@@ -1,43 +1,70 @@
 # ai.zig
 
-A **1:1 port of the [Vercel AI SDK](https://github.com/vercel/ai) to Zig 0.16**,
-built on Zig's new `std.Io` interface, with a **stable C ABI** and
-language-idiomatic wrappers (Python today, Rust planned) on top.
+**AI SDK semantics. Zig runtime. C portability.**
 
-One SDK for talking to LLMs — `generateText`, `streamText`, multi-step
-agentic tool loops, structured output, embeddings, reranking — with the same
-capabilities and the same mental model as the upstream TypeScript SDK,
-expressed in idiomatic Zig and callable from any language that can speak C.
+ai.zig is an **independent, parity-focused Zig 0.16 implementation of the
+[Vercel AI SDK](https://github.com/vercel/ai) v7 core**, built on `std.Io`.
+It provides `generateText`, `streamText`, multi-step tool execution,
+structured output, embeddings, reranking, reusable agents, chat-UI
+streaming, and an MCP client across Anthropic, OpenAI, OpenAI-compatible
+providers, and OpenRouter — usable directly from Zig or through its C ABI
+and Python bindings.
+
+> ai.zig is an independent project and is **not affiliated with or endorsed
+> by Vercel**. The upstream SDK is vendored read-only under `inspiration/`
+> as the porting reference.
 
 ## Status
 
-**Core implemented and live-validated** (roadmap phases 0–8 of 12):
+| Surface | State | Live-tested against | C ABI | Python |
+| --- | --- | --- | --- | --- |
+| Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes |
+| Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes |
+| Structured output (Output strategies) | beta | Anthropic (haiku) | — | — |
+| Embeddings / reranking | beta | — (canned fixtures) | — | — |
+| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | — | — |
+| UI message stream + Chat client | beta | — (canned + in-process e2e) | — | — |
+| MCP client (stdio / SSE / streamable HTTP) | beta | real stdio child process | — | — |
+| Media (image / speech / transcribe / video) | beta | OpenAI speech→transcribe round trip | — | — |
+| Providers: anthropic, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream | via generate/stream |
+| **C ABI + Python bindings** | **preview** (pending ABI v1) | Anthropic | — | — |
+| Realtime / WebSocket | planned | — | — | — |
+| Rust bindings | planned | — | — | — |
 
-- `generateText` / `streamText` with the full multi-step tool loop —
-  stop conditions, `prepareStep`, tool-call repair/refinement, approvals
-  (HMAC-signed), concurrent tool execution with streamed preliminary
-  results, total/step/chunk/per-tool timeouts, retries with `Retry-After`
-- `generateObject` / `streamObject` and the output strategies
-  (object/array/choice/json) with partial-object streaming over
-  repair-based incremental JSON parsing
-- `embed` / `embedMany` (wave-parallel batching) and `rerank`
-- `ToolLoopAgent` over any provider
-- Providers: **anthropic** (native, incl. thinking/cache-control/betas),
-  **openai** (Chat Completions *and* the item-based Responses API),
-  **openai_compatible** (the vendor template), **openrouter** (default
-  provider for bare `"vendor/model"` ids)
-- Telemetry vtable + dispatcher, warning logger, provider registry,
-  middleware (`wrapLanguageModel`, extract-reasoning/JSON, simulate
-  streaming, smooth-stream transform)
-- **C ABI** (`libai.a` / `libai.so` + hand-written `ai.h`, ABI-locked by a
-  translate-c test) and **Python ctypes bindings** — a Python tool callback
-  executes inside the Zig agentic loop; streams cancel cross-thread in
-  sub-millisecond time
+*Table dated 2026-07-11; live rows name the endpoints actually exercised by
+the `-Dlive` gate that session. The full suite is run at every phase gate;
+see [docs/roadmap.md](docs/roadmap.md) for per-phase acceptance and
+[docs/contracts.md](docs/contracts.md) for the behavioral contracts and
+known sharp edges.*
 
-430+ Zig tests plus a Python suite; every phase gate includes live smokes
-against real Anthropic and OpenAI endpoints (`-Dlive`). Remaining phases:
-UI message stream + MCP, media generation, realtime/WebSocket, FFI v1 +
-Rust crate ([roadmap](docs/roadmap.md)).
+**The C ABI is a tested preview, not yet a stability promise.** A
+translate-c test locks the header against the current tree; cross-release
+compatibility (ABI versioning, tag-value stability, old-client-new-library
+tests) is the ABI v1 work tracked in the roadmap.
+
+## Installing
+
+Not yet published to a package index. Consume it as a Zig package from a
+checkout (or your fork):
+
+```zig
+// build.zig.zon
+.dependencies = .{
+    .ai_zig = .{ .path = "../ai.zig" }, // or .url/.hash of a fetched archive
+},
+```
+
+```zig
+// build.zig
+const ai_dep = b.dependency("ai_zig", .{ .target = target, .optimize = optimize });
+exe_mod.addImport("ai", ai_dep.module("ai"));
+exe_mod.addImport("anthropic", ai_dep.module("anthropic"));
+exe_mod.addImport("provider_utils", ai_dep.module("provider_utils"));
+```
+
+Modules exposed: `ai`, `provider`, `provider_utils`, `anthropic`, `openai`,
+`openai_compatible`, `openrouter`, `xai`, `mcp`. For C/Python:
+`zig build ffi` produces `zig-out/lib/libai.{a,so*}` + `zig-out/include/ai.h`.
 
 ## Using it (Zig)
 
@@ -71,7 +98,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, api_key: []const u8) !void {
     defer transport.deinit();
 
     const factory = try anthropic.createAnthropic(.{
-        .api_key = api_key,
+        .api_key = api_key, // keys are always explicit — nothing reads your env
         .transport = transport.transport(),
     });
     var chat = try factory.messages("claude-haiku-4-5-20251001", null);
@@ -93,7 +120,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, api_key: []const u8) !void {
     });
     defer result.deinit();
 
-    std.debug.print("{s}\n", .{result.text()}); // steps, usage, messages all on result
+    std.debug.print("{s}\n", .{result.text()}); // steps, usage, resolved model per step
 }
 ```
 
@@ -113,9 +140,11 @@ while (try stream.next(io)) |part| switch (part) {
 };
 ```
 
-The same loop runs `tool_call` / `tool_result` / `reasoning_delta` /
-`finish_step` parts during agentic streams; `stream.textStream(io)` gives an
-independent text-only cursor, and accessors like `stream.text()` auto-drain.
+**Structured output** follows the current v7 model: `generateText` /
+`streamText` with object, array, choice, and JSON **Output strategies**
+(partial-object streaming included). `generateObject` / `streamObject`
+compatibility APIs are also provided, matching upstream's
+deprecated-but-present surface.
 
 ## Using it (Python)
 
@@ -134,92 +163,132 @@ with Runtime() as runtime:
 ```
 
 The tool lambda runs *inside* the Zig loop via a C callback; `stream_text`
-returns an iterator whose `cancel()` interrupts a blocked pull from any
-thread. Build and test: `zig build ffi && python3 -m pytest bindings/python`
-(see [bindings/python/README.md](bindings/python/README.md)).
+returns an iterator whose `cancel()` unblocks a waiting pull from any
+thread. See [docs/contracts.md](docs/contracts.md) for the callback,
+cancellation, and lifetime rules, and
+[bindings/python/README.md](bindings/python/README.md) to build and test.
 
-## Architecture
+## Model routing — read this once
 
-The implemented module graph mirrors the npm dependency spine:
+Bare string model ids like `"anthropic/claude-…"` resolve through a
+**default provider**, which is **OpenRouter** when enabled — meaning those
+requests, credentials, and billing go to OpenRouter, not to the named
+vendor.
 
-```
-ai ───────────────┬──▶ provider_utils ──▶ provider        (pure spec: types + vtables)
-providers/* ──────┤        openrouter (default), openai, anthropic,
-mcp (phase 9) ────┘        openai_compatible, …
-ffi (libai.a / libai.so + ai.h) ──▶ ai                    (C ABI over everything)
-```
+There is no silent path to that behavior: ai.zig never reads ambient
+environment variables, so bare ids **fail with an explanatory
+`LoadAPIKeyError`** until your application explicitly opts in via
+`ai.setDefaultRuntime(gpa, io)` + `ai.setDefaultEnv(...)` (supplying
+`OPENROUTER_API_KEY`) or installs its own default with
+`ai.setDefaultProvider(...)`. The built-in OpenRouter default can be
+compiled out entirely with `-Ddefault-openrouter=false`. To pin the request
+path, construct providers explicitly (as in the examples above) — every
+step result carries the resolved provider and model id.
 
-(Upstream's `@ai-sdk/gateway` — Vercel's hosted proxy — is skipped; bare
-`"vendor/model"` string ids resolve through a thin **OpenRouter** provider
-by default, runtime-overridable and compile-out-able via
-`-Ddefault-openrouter=false`. See porting guide §11.)
+## What "parity" means here
 
-- **`provider`** — the V4 specification: `LanguageModel` et al., the 21-tag
-  stream-part union, prompt/content types, usage, errors + `Diagnostics`,
-  and the canonical JSON wire codec (comptime-exhaustive tag tables).
-- **`provider_utils`** — `HttpTransport` over `std.http.Client`, the WHATWG
-  SSE decoder, retry engine, `fixJson`/partial-JSON, schema abstraction,
-  SSRF-guarded downloads.
-- **`ai`** — the core: generate/stream text and objects, agent, prompt
-  conversion, registry, middleware, telemetry, and the streaming pipeline
-  (Broadcast part log + stitchable multi-step stream over `Io.Queue`).
-- **`ffi`** — opaque handles, `enum(c_int)` statuses, pull-based stream
-  iteration with borrow-until-next-call parts, callback tools.
+Not "1:1". ai.zig targets the upstream **v7 core** at these levels:
+
+1. **Provider wire parity** — request bodies, response mapping, stream-part
+   sequences, and error taxonomies match upstream, fixture-tested (many
+   fixtures copied verbatim from upstream test suites).
+2. **Core behavioral parity** — tool loops, stop conditions, prepareStep,
+   output strategies, retry policy, abort semantics: the upstream test
+   contracts are ported as Zig tests.
+3. **Conceptual API parity** — the upstream mental model with canonical
+   names only (deprecated aliases are not carried).
+4. **Intentional Zig adaptations** — allocators/arenas, error unions +
+   diagnostics, pull-based streams over `std.Io`, explicit cancellation.
+   Every deviation is itemized with rationale in the
+   [fidelity ledger](docs/porting-guide.md) (§18, 16 entries).
+5. **Unsupported surfaces** — see the status table; notably Vercel-Gateway
+   routing (replaced by opt-in OpenRouter), realtime (planned), and the
+   framework UI bindings (React/Vue/etc. are out of scope; the
+   framework-agnostic Chat core they wrap *is* ported).
 
 ## Why Zig 0.16
 
 `Io` is passed by value like `Allocator`; `io.async`/`Future.cancel` give
-structured concurrency with first-class cancelation (`error.Canceled` in
-every I/O error set); `Io.Queue(T)` is an MPMC channel with suspend-based
-backpressure — the natural analog of the SDK's `ReadableStream` pipelines.
-`std.http.Client`, TLS 1.2/1.3, and `std.json` are stdlib-provided and
-already `Io`-integrated. Code written against `Io` today (threaded backend)
-gets the evented/io_uring backend for free when it lands. **Streaming,
-concurrency, cancelation, and the network layer are ported in full** — a
-blocking-only port would be a failed port.
+structured concurrency where cancelable I/O operations report
+`error.Canceled` at well-defined points; `Io.Queue(T)` is an MPMC channel
+with suspend-based backpressure — a natural analog of the SDK's
+`ReadableStream` pipelines. `std.http.Client`, TLS 1.2/1.3, and `std.json`
+are stdlib-provided and `Io`-integrated. Code written against `std.Io`
+today (threaded backend) is positioned to use future evented/io_uring
+backends with little or no public API change. Streaming, concurrency,
+cancellation, and the network layer are ported in full — a blocking-only
+port would have been a failed port.
+
+Cancellation is layered, and the layers differ (see
+[docs/contracts.md](docs/contracts.md)): unblocking a waiting `next()` is
+immediate; in-flight I/O cancels at its next cancellation point; **user
+tool code is cooperative** — a timeout or cancel unblocks the SDK caller
+but cannot preempt arbitrary callback code still running.
+
+## Architecture
+
+```
+ai ───────────────┬──▶ provider_utils ──▶ provider        (pure spec: types + vtables)
+providers/* ──────┤        openrouter (default), openai, anthropic,
+mcp ──────────────┘        openai_compatible, xai, …
+ffi (libai.a / libai.so + ai.h) ──▶ ai                    (C ABI over everything)
+```
+
+- **`provider`** — the V4 specification: model vtables, the 21-tag
+  stream-part union, prompt/content types, usage, errors + diagnostics,
+  and the canonical JSON wire codec (comptime-exhaustive tag tables).
+- **`provider_utils`** — `HttpTransport` over `std.http.Client`, WHATWG SSE
+  decoder, retry engine, partial-JSON repair, schema abstraction,
+  multipart encoder, SSRF-guarded downloads.
+- **`ai`** — generate/stream text and objects, agent, prompt conversion,
+  registry, middleware, telemetry, the streaming pipeline (Broadcast part
+  log + stitchable multi-step stream over `Io.Queue`), UI message stream +
+  Chat, media orchestration.
+- **`mcp`** — JSON-RPC client, stdio/SSE/streamable-HTTP transports, MCP
+  tools bridged into the tool loop.
+- **`ffi`** — opaque handles, `enum(c_int)` statuses, pull-based stream
+  iteration with borrow-until-next-call parts, callback tools.
 
 ## Building and testing
 
-This repo uses [anyzig](https://github.com/marler8997/anyzig); the pinned
-compiler comes from `build.zig.zon` (**0.16.0**).
+Uses [anyzig](https://github.com/marler8997/anyzig); the pinned compiler
+comes from `build.zig.zon` (**0.16.0**).
 
 | Command | Purpose |
 | --- | --- |
 | `zig build test` | full suite (per-module aggregates) |
-| `zig build test-ai` / `test-provider` / `test-anthropic` / … | one module |
+| `zig build test-ai` / `test-provider` / `test-mcp` / … | one module |
 | `zig build test -Dtest-filter=sse` | filter by test-name substring |
-| `zig build test-integration -Dlive` | live API smokes (needs real keys) |
-| `zig build ffi` | build `libai.a`, `libai.so.*`, install `include/ai.h` |
+| `zig build test-integration -Dlive` | live API smokes (explicit keys required) |
+| `zig build ffi` | build `libai` + install `include/ai.h` |
 | `python3 -m pytest bindings/python` | Python binding suite |
-| `zig env` | locate the real compiler + stdlib source (`.std_dir`) |
 
-When the compiler rejects something, the stdlib source at `.std_dir` is the
-documentation. Required reading for contributors (humans and agents):
-[`AGENTS.md`](AGENTS.md), then the Zig 0.16 release-notes sections
-*"I/O as an Interface"* and *"Juicy Main"*.
+Contributor ground rules (humans and agents): [`AGENTS.md`](AGENTS.md).
+When the compiler pushes back, the stdlib source at `zig env`'s `.std_dir`
+is the documentation.
 
 ## Repository layout
 
 | Path | Contents |
 | --- | --- |
-| `src/` | the Zig implementation (one directory per module) |
+| `src/` | the implementation (one directory per module) |
 | `include/ai.h` | the hand-written C ABI header (ABI-locked by test) |
 | `bindings/python/` | the `ai_zig` ctypes package + pytest suite |
-| `inspiration/` | vendored Vercel AI SDK monorepo — **read-only** source of truth |
-| `docs/porting-guide.md` | TS→Zig mapping: types, streaming, memory, network, FFI, fidelity ledger |
-| `docs/roadmap.md` | phased plan with acceptance criteria and completion status |
+| `inspiration/` | vendored Vercel AI SDK monorepo — **read-only** reference |
+| `docs/porting-guide.md` | TS→Zig mapping + the fidelity ledger |
+| `docs/contracts.md` | behavioral contracts, lifetimes, known sharp edges |
+| `docs/roadmap.md` | phased plan, acceptance criteria, completion status |
 | `docs/research/` | deep research reports + working Zig 0.16 prototypes |
-| `AGENTS.md` | rules for all agents working in this repo |
 
 ## Upstream pin
 
 `inspiration/` tracks [vercel/ai](https://github.com/vercel/ai) at the
 **v7** major (`ai@7.0.22`, `@ai-sdk/provider@4.0.3` — interface version
-**V4**, `@ai-sdk/provider-utils@5.0.7`). The port targets V4 exclusively.
-Intentional deviations are itemized in the porting guide's
-[fidelity ledger](docs/porting-guide.md) (§18) — currently 16 entries, each
-with rationale.
+**V4**, `@ai-sdk/provider-utils@5.0.7`).
 
 ## License
 
-TBD (upstream is Apache-2.0).
+Not yet finalized — resolving it is a tracked pre-release requirement
+(upstream is Apache-2.0; the vendored `inspiration/` tree retains its own
+license). Until then: all rights reserved; do not redistribute binaries.
+ai.zig is not affiliated with or endorsed by Vercel.
