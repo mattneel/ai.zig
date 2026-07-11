@@ -83,6 +83,19 @@ pub fn build(b: *std.Build) void {
     });
     mcp.addImport("provider", provider);
     mcp.addImport("provider_utils", provider_utils);
+    mcp.addImport("ai", ai);
+
+    const mcp_test_server_module = b.createModule(.{
+        .root_source_file = b.path("src/mcp/test_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const mcp_test_server = b.addExecutable(.{
+        .name = "mcp-test-server",
+        .root_module = mcp_test_server_module,
+    });
+    const mcp_test_options = b.addOptions();
+    mcp_test_options.addOptionPath("test_server_path", mcp_test_server.getEmittedBin());
 
     const ffi = b.addModule("ffi", .{
         .root_source_file = b.path("src/ffi/root.zig"),
@@ -136,6 +149,17 @@ pub fn build(b: *std.Build) void {
     openai.addImport("test_support", test_support);
     ffi.addImport("test_support", test_support);
 
+    const mcp_tests = b.createModule(.{
+        .root_source_file = b.path("src/mcp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_tests.addImport("provider", provider);
+    mcp_tests.addImport("provider_utils", provider_utils);
+    mcp_tests.addImport("ai", ai);
+    mcp_tests.addImport("test_support", test_support);
+    mcp_tests.addOptions("mcp_test_options", mcp_test_options);
+
     const integration = b.createModule(.{
         .root_source_file = b.path("src/integration/root.zig"),
         .target = target,
@@ -159,7 +183,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "openrouter", .test_step = "openrouter", .module = openrouter },
         .{ .name = "anthropic", .test_step = "anthropic", .module = anthropic },
         .{ .name = "openai", .test_step = "openai", .module = openai },
-        .{ .name = "mcp", .test_step = "mcp", .module = mcp },
+        .{ .name = "mcp", .test_step = "mcp", .module = mcp, .test_module = mcp_tests },
         .{ .name = "ffi", .test_step = "ffi", .module = ffi },
         .{ .name = "test_support", .test_step = "support", .module = test_support },
         .{ .name = "integration", .test_step = "integration", .module = integration },
@@ -175,7 +199,7 @@ pub fn build(b: *std.Build) void {
 
         const tests = b.addTest(.{
             .name = b.fmt("{s}-tests", .{entry.name}),
-            .root_module = entry.module,
+            .root_module = entry.test_module orelse entry.module,
             .filters = filters,
         });
         const run_tests = b.addRunArtifact(tests);
@@ -192,4 +216,5 @@ const Module = struct {
     name: []const u8,
     test_step: []const u8,
     module: *std.Build.Module,
+    test_module: ?*std.Build.Module = null,
 };
