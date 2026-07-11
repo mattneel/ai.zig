@@ -54,6 +54,17 @@ pub const StopStreamFn = transform_api.StopStreamFn;
 pub const StepResult = types.StepResult;
 pub const ContentPart = types.ContentPart;
 
+/// Optional owner cleanup attached by wrappers that must keep call-scoped
+/// resources alive for the lazy stream lifetime.
+pub const StreamCleanup = struct {
+    ctx: *anyopaque,
+    deinit_fn: *const fn (ctx: *anyopaque) void,
+
+    pub fn deinit(self: StreamCleanup) void {
+        self.deinit_fn(self.ctx);
+    }
+};
+
 pub const ChunkEvent = struct { chunk: *const Part };
 
 pub const StreamErrorEvent = struct {
@@ -192,6 +203,14 @@ pub const ElementOutputStream = struct {
 
 pub const StreamTextResult = struct {
     core: *Core,
+
+    /// Transfers one wrapper-owned cleanup into the stream result. The cleanup
+    /// runs after the pipeline and call arena are no longer able to reference
+    /// it, including when a lazy result is deinitialized without consumption.
+    pub fn attachCleanup(self: *StreamTextResult, cleanup: StreamCleanup) void {
+        std.debug.assert(self.core.cleanup == null);
+        self.core.cleanup = cleanup;
+    }
 
     /// Drives the public full stream. In-stream error parts are returned as
     /// data; only pipeline/memory failures use the Zig error channel.
@@ -426,6 +445,7 @@ const Core = struct {
     abort_reason: ?[]const u8 = null,
     timeout_warning_logged: bool = false,
     pending_part: ?Part = null,
+    cleanup: ?StreamCleanup = null,
 
     steps: std.ArrayList(StepResult) = .empty,
     response_messages: std.ArrayList(message.ModelMessage) = .empty,
@@ -523,6 +543,8 @@ const Core = struct {
         self.pipeline.deinit(io);
         self.broadcast.deinit();
         self.arena_state.deinit();
+        if (self.cleanup) |cleanup| cleanup.deinit();
+        self.cleanup = null;
     }
 
     fn nextId(self: *Core) Allocator.Error![]const u8 {

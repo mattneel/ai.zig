@@ -133,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_support.addImport("provider_utils", provider_utils);
+    openai.addImport("test_support", test_support);
     ffi.addImport("test_support", test_support);
 
     const integration = b.createModule(.{
@@ -145,6 +146,7 @@ pub fn build(b: *std.Build) void {
     integration.addImport("test_support", test_support);
     integration.addImport("openai_compatible", openai_compatible);
     integration.addImport("anthropic", anthropic);
+    integration.addImport("openai", openai);
     integration.addImport("openrouter", openrouter);
     integration.addImport("ai", ai);
     integration.addOptions("build_options", build_options);

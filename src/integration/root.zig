@@ -2,6 +2,7 @@ const std = @import("std");
 const provider = @import("provider");
 const provider_utils = @import("provider_utils");
 const test_support = @import("test_support");
+const openai = @import("openai");
 const openai_compatible = @import("openai_compatible");
 const anthropic = @import("anthropic");
 const openrouter = @import("openrouter");
@@ -1698,6 +1699,134 @@ test "integration Anthropic rejects embedding model lookup" {
     try std.testing.expectEqual(.embedding_model, diagnostics.payload.no_such_model.model_type);
 }
 
+test "integration ToolLoopAgent drives native OpenAI Chat through a two-step tool loop" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"chat-agent-1","created":1700000000,"model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-weather-1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"chat-agent-2","created":1700000001,"model":"gpt-4o-mini","choices":[{"message":{"role":"assistant","content":"Paris is sunny and 21 C."},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = openai.createOpenAi(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.chat("gpt-4o-mini", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = chat.languageModel() },
+        .instructions = .{ .text = "Call weather once, then answer." },
+        .tools = &tools,
+    });
+    var result = try agent.generate(io, allocator, .{
+        .prompt = .{ .text = "What is the weather in Paris?" },
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", result.text());
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"role\":\"tool\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"tool_call_id\":\"call-weather-1\"") != null);
+    for (requests) |request| {
+        const user_agent = recordedHeader(request.headers, "user-agent").?;
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig-agent/tool-loop") != null);
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig/openai/") != null);
+    }
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
+test "integration ToolLoopAgent remains provider-agnostic through Anthropic streaming" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-agent-1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu-agent-weather-1\",\"name\":\"weather\",\"input\":{}}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-agent-2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":9,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Paris is sunny and 21 C.\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":6}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-haiku", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = chat.languageModel() },
+        .instructions = .{ .text = "Call weather once, then answer." },
+        .tools = &tools,
+    });
+    var result = try agent.stream(io, allocator, .{
+        .prompt = .{ .text = "What is the weather in Paris?" },
+    });
+    defer result.deinit(io);
+
+    var finish_steps: usize = 0;
+    var tool_calls: usize = 0;
+    while (try result.next(io)) |part| switch (part) {
+        .finish_step => finish_steps += 1,
+        .tool_call => tool_calls += 1,
+        .abort => return error.AgentStreamAborted,
+        .err => return error.AgentProviderStreamError,
+        else => {},
+    };
+    try std.testing.expectEqual(2, finish_steps);
+    try std.testing.expectEqual(1, tool_calls);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", try result.text(io));
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    for (requests) |request| {
+        const user_agent = recordedHeader(request.headers, "user-agent").?;
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig-agent/tool-loop") != null);
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig/anthropic/") != null);
+    }
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "live Phase 7 Anthropic generateObject and streamObject smoke" {
     if (!build_options.live) return error.SkipZigTest;
 
@@ -2003,6 +2132,192 @@ test "live Anthropic streamText two-step tool loop" {
             tool_result_count,
             finish_step_count,
             finish_count,
+            weather.calls,
+            final_text.len,
+            total_tokens,
+        },
+    );
+}
+
+test "live native OpenAI Chat generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live native OpenAI smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENAI_API_KEY") orelse {
+        std.debug.print("live native OpenAI smoke skipped: OPENAI_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = openai.createOpenAi(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "gpt-4o-mini";
+    var chat = try factory.chat(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{
+        .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }},
+    } }};
+    const options: provider.CallOptions = .{
+        .prompt = &prompt,
+        .max_output_tokens = 32,
+    };
+
+    var generate_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena_state.deinit();
+    const generated = try chat.languageModel().doGenerate(
+        io,
+        generate_arena_state.allocator(),
+        &options,
+        null,
+    );
+    var generated_text_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_text_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_text_bytes > 0);
+    try std.testing.expect(
+        generated.finish_reason.unified == .stop or
+            generated.finish_reason.unified == .length,
+    );
+
+    var stream_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena_state.deinit();
+    const streamed = try chat.languageModel().doStream(
+        io,
+        stream_arena_state.allocator(),
+        &options,
+        null,
+    );
+    defer streamed.stream.deinit(io);
+    var stream_parts: usize = 0;
+    var text_deltas: usize = 0;
+    var streamed_text_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        stream_parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                text_deltas += 1;
+                streamed_text_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveOpenAiProviderStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(text_deltas > 0);
+    try std.testing.expect(streamed_text_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live native OpenAI Chat: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live ToolLoopAgent streams an Anthropic two-step weather loop" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live ToolLoopAgent smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "ANTHROPIC_API_KEY") orelse {
+        std.debug.print("live ToolLoopAgent smoke skipped: ANTHROPIC_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = try anthropic.createAnthropic(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "claude-haiku-4-5-20251001";
+    var chat = try factory.messages(model_id, null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = chat.languageModel() },
+        .instructions = .{ .text = "Call the weather tool exactly once for the requested city. After the tool result, answer in one short sentence and do not call any more tools." },
+        .tools = &tools,
+        .max_output_tokens = 200,
+    });
+    var result = try agent.stream(io, allocator, .{
+        .prompt = .{ .text = "What is the weather in Paris?" },
+    });
+    defer result.deinit(io);
+
+    var parts: usize = 0;
+    var text_deltas: usize = 0;
+    var tool_calls: usize = 0;
+    var tool_results: usize = 0;
+    var finish_steps: usize = 0;
+    var finishes: usize = 0;
+    while (try result.next(io)) |part| {
+        parts += 1;
+        switch (part) {
+            .text_delta => |value| if (value.text.len != 0) {
+                text_deltas += 1;
+            },
+            .tool_call => tool_calls += 1,
+            .tool_result => |value| if (!value.preliminary) {
+                tool_results += 1;
+            },
+            .finish_step => finish_steps += 1,
+            .finish => finishes += 1,
+            .abort => return error.LiveAgentStreamAborted,
+            .err => return error.LiveAgentProviderStreamError,
+            else => {},
+        }
+    }
+    const steps = try result.steps(io);
+    const final_text = try result.text(io);
+    const usage = try result.totalUsage(io);
+    const total_tokens = (usage.input_tokens.total orelse 0) +
+        (usage.output_tokens.total orelse 0);
+    try std.testing.expectEqual(2, steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expect(tool_calls >= 1);
+    try std.testing.expect(tool_results >= 1);
+    try std.testing.expect(text_deltas >= 1);
+    try std.testing.expectEqual(2, finish_steps);
+    try std.testing.expectEqual(1, finishes);
+    try std.testing.expect(final_text.len > 0);
+    try std.testing.expect(total_tokens > 0);
+    std.debug.print(
+        "live ToolLoopAgent Anthropic: model={s} parts={d} text_deltas={d} tool_calls={d} tool_results={d} finish_steps={d} executions={d} final_text_bytes={d} total_tokens={d}\n",
+        .{
+            model_id,
+            parts,
+            text_deltas,
+            tool_calls,
+            tool_results,
+            finish_steps,
             weather.calls,
             final_text.len,
             total_tokens,
