@@ -1,5 +1,13 @@
 # Roadmap
 
+**Status (2026-07-11):** Phases 0–8 are **complete** and live-validated —
+foundations `e32142e`, provider spec `f8b8dba`, provider_utils `98a1619`,
+first providers `d1849c6`, ai core `7989891`+`e3a4d3f`, streaming
+`91fd9f5`+`13ae77c`, C ABI + Python `d881a1f`, structured output/embeddings
+`13d66cc`, agent + OpenAI `2b7c919`+`5b5b7bf`. Phases 4, 5, and 8 shipped as
+a/b task pairs. **Next: Phase 9** (UI message stream, Chat, MCP), then 10
+(media), 11 (realtime/WebSocket), 12 (FFI v1, Rust crate, provider breadth).
+
 Phased implementation plan. Ordering is forced by the upstream dependency
 spine (`provider` → `provider_utils` → providers → `ai`) plus two
 project-specific constraints: the telemetry dispatcher must exist before
