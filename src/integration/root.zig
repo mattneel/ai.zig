@@ -1935,6 +1935,198 @@ test "integration ToolLoopAgent remains provider-agnostic through Anthropic stre
     try std.testing.expectEqual(0, server.serveErrorCount());
 }
 
+const AgentUiTestServer = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    agent: ai.Agent,
+    listener: std.Io.net.Server,
+    thread: ?std.Thread = null,
+    stopping: std.atomic.Value(bool) = .init(false),
+    serve_error: ?anyerror = null,
+
+    fn start(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        agent: ai.Agent,
+    ) !*AgentUiTestServer {
+        var listener = try (std.Io.net.IpAddress{ .ip4 = .loopback(0) }).listen(io, .{
+            .reuse_address = true,
+        });
+        const self = try gpa.create(AgentUiTestServer);
+        self.* = .{ .gpa = gpa, .io = io, .agent = agent, .listener = listener };
+        errdefer {
+            listener.deinit(io);
+            gpa.destroy(self);
+        }
+        self.thread = try std.Thread.spawn(.{}, threadMain, .{self});
+        return self;
+    }
+
+    fn port(self: *const AgentUiTestServer) u16 {
+        return switch (self.listener.socket.address) {
+            .ip4 => |address| address.port,
+            .ip6 => |address| address.port,
+        };
+    }
+
+    fn url(self: *const AgentUiTestServer, arena: std.mem.Allocator) ![]const u8 {
+        return std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/api/chat", .{self.port()});
+    }
+
+    fn stop(self: *AgentUiTestServer) void {
+        if (self.stopping.swap(true, .acq_rel)) return;
+        if (self.thread) |thread| {
+            var wake = self.listener.socket.address.connect(self.io, .{ .mode = .stream }) catch null;
+            if (wake) |*stream| stream.close(self.io);
+            thread.join();
+            self.thread = null;
+        }
+    }
+
+    fn deinit(self: *AgentUiTestServer) void {
+        self.stop();
+        self.listener.deinit(self.io);
+        self.gpa.destroy(self);
+    }
+
+    fn serve(self: *AgentUiTestServer) !void {
+        const connection = try self.listener.accept(self.io);
+        defer connection.close(self.io);
+        var receive_buffer: [32 * 1024]u8 = undefined;
+        var send_buffer: [16 * 1024]u8 = undefined;
+        var reader = connection.reader(self.io, &receive_buffer);
+        var writer = connection.writer(self.io, &send_buffer);
+        var server = std.http.Server.init(&reader.interface, &writer.interface);
+        var request = try server.receiveHead();
+        if (request.head.method != .POST) return error.UnexpectedHttpMethod;
+
+        var body_buffer: [16 * 1024]u8 = undefined;
+        const body_reader = try request.readerExpectContinue(&body_buffer);
+        var arena_state = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const body_text = try body_reader.allocRemaining(arena, .limited(1 << 20));
+        const body = try std.json.parseFromSliceLeaky(std.json.Value, arena, body_text, .{
+            .allocate = .alloc_always,
+        });
+        const ui_messages = try ai.ui.convert_ui_messages.parseAndValidateUIMessages(
+            arena,
+            body.object.get("messages") orelse return error.MissingMessages,
+            .{ .tools = self.agent.tools },
+        );
+        try ai.ui.writeAgentUIStreamResponse(
+            self.io,
+            self.gpa,
+            &request,
+            self.agent,
+            ui_messages,
+            .{},
+            .{},
+        );
+    }
+
+    fn threadMain(self: *AgentUiTestServer) void {
+        self.serve() catch |err| {
+            if (!self.stopping.load(.acquire)) self.serve_error = err;
+        };
+    }
+};
+
+test "integration UI HTTP round trip streams Anthropic agent tool lifecycle into Chat" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const provider_server = try test_support.MockServer.start(allocator, io);
+    defer provider_server.deinit();
+    try provider_server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-ui-1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu-ui-weather-1\",\"name\":\"weather\",\"input\":{}}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+    try provider_server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-ui-2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":9,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Paris is sunny and 21 C.\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":6}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+
+    var provider_client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer provider_client.deinit();
+    var provider_base: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = provider_server.baseUrl(&provider_base),
+        .api_key = "test-key",
+        .transport = provider_client.transport(),
+    });
+    var model = try factory.messages("claude-haiku", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = model.languageModel() },
+        .instructions = .{ .text = "Call weather once, then answer." },
+        .tools = &tools,
+    });
+
+    const ui_server = try AgentUiTestServer.start(allocator, io, agent.asAgent());
+    defer ui_server.deinit();
+    var url_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer url_arena_state.deinit();
+    const api_url = try ui_server.url(url_arena_state.allocator());
+
+    var chat_http_client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer chat_http_client.deinit();
+    var default_transport = ai.ui.DefaultChatTransport.init(.{
+        .transport = chat_http_client.transport(),
+        .api = api_url,
+    });
+    const chat_state = try ai.ui.MemoryChatState.create(allocator, &.{});
+    defer chat_state.deinit();
+    const chat = try ai.ui.Chat.create(io, allocator, .{
+        .id = "ui-chat",
+        .state = chat_state.asState(),
+        .transport = default_transport.asTransport(),
+    });
+    defer chat.deinit();
+
+    try chat.sendMessage(.{ .text = "What is the weather in Paris?" }, .{});
+    ui_server.stop();
+    if (ui_server.serve_error) |err| return err;
+
+    try std.testing.expectEqual(ai.ui.ChatStatus.ready, chat.status());
+    try std.testing.expectEqual(2, chat_state.message_list.items.len);
+    const assistant = chat_state.message_list.items[1];
+    try std.testing.expectEqual(ai.ui.messages.Role.assistant, assistant.role);
+    try std.testing.expectEqual(4, assistant.parts.len);
+    try std.testing.expect(assistant.parts[0] == .step_start);
+    try std.testing.expect(assistant.parts[1] == .tool);
+    try std.testing.expect(assistant.parts[1].tool.state == .output_available);
+    try std.testing.expectEqualStrings(
+        "Paris",
+        assistant.parts[1].tool.state.output_available.input.object.get("city").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "sunny",
+        assistant.parts[1].tool.state.output_available.output.object.get("condition").?.string,
+    );
+    try std.testing.expect(assistant.parts[2] == .step_start);
+    try std.testing.expect(assistant.parts[3] == .text);
+    try std.testing.expectEqual(ai.ui.messages.PartState.done, assistant.parts[3].text.state.?);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", assistant.parts[3].text.text);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expectEqual(2, provider_server.recordedRequests().len);
+    try std.testing.expectEqual(0, provider_server.serveErrorCount());
+}
+
 test "live Phase 7 Anthropic generateObject and streamObject smoke" {
     if (!build_options.live) return error.SkipZigTest;
 

@@ -22,6 +22,7 @@ pub const stream_object = @import("stream_object.zig");
 pub const embed_api = @import("embed.zig");
 pub const rerank_api = @import("rerank.zig");
 pub const stream = @import("stream/root.zig");
+pub const ui = @import("ui/root.zig");
 
 pub const ModelMessage = message.ModelMessage;
 pub const Tool = tool.Tool;
@@ -120,6 +121,9 @@ pub const choiceWithOptions = output.choiceWithOptions;
 pub const json = output.json;
 pub const jsonWithOptions = output.jsonWithOptions;
 pub const TextStreamPart = stream.TextStreamPart;
+pub const UIMessage = ui.UIMessage;
+pub const UIMessagePart = ui.UIMessagePart;
+pub const UIMessageChunk = ui.UIMessageChunk;
 pub const LanguageModelStreamPart = stream.LanguageModelStreamPart;
 pub const Broadcast = stream.Broadcast;
 pub const Stitchable = stream.Stitchable;

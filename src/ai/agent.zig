@@ -27,6 +27,7 @@ pub const Agent = struct {
     ctx: *anyopaque,
     version: []const u8 = version,
     id: ?[]const u8 = null,
+    tools: tool_api.ToolSet = &.{},
     generate_fn: *const fn (
         ctx: *anyopaque,
         io: std.Io,
@@ -228,6 +229,7 @@ pub const ToolLoopAgent = struct {
         return .{
             .ctx = self,
             .id = self.settings.id,
+            .tools = self.settings.tools,
             .generate_fn = erasedGenerate,
             .stream_fn = erasedStream,
         };
