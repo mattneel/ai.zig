@@ -20,13 +20,13 @@ C ABI and Python bindings.
 | --- | --- | --- | --- | --- |
 | Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes |
 | Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes |
-| Structured output (Output strategies) | beta | Claude Haiku 4.5 | objects | — |
-| Embeddings / reranking | beta | — (canned fixtures) | embeddings | — |
-| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | yes | — |
-| UI message stream + Chat client | beta | — (canned + in-process e2e) | UI chunks | — |
+| Structured output (Output strategies) | beta | Claude Haiku 4.5 | objects | objects |
+| Embeddings / reranking | beta | — (canned fixtures) | embeddings | embeddings |
+| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | yes | yes |
+| UI message stream + Chat client | beta | — (canned + in-process e2e) | UI chunks | UI chunks |
 | MCP client (stdio / SSE / streamable HTTP) | beta | stdio live (child process); SSE + streamable HTTP via canned fixtures | — | — |
-| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | image/speech/transcribe | — |
-| Providers: anthropic, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream | via generate/stream |
+| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | image/speech/transcribe | image/speech/transcribe |
+| Providers: anthropic, google, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream (google pending) | all listed except google (C ABI pending) |
 | Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — |
 | Rust bindings | planned | — | — | — |
 
@@ -45,13 +45,14 @@ The **C ABI v1 policy is implemented and enforced in-tree**: the build checks
 the header/runtime version query, frozen numeric tags, size-prefixed evolvable
 structs, SONAME and symbol visibility, and compiles and runs a frozen v1
 snapshot client. Cross-release verification against tagged artifacts begins
-with the first tagged release. The Python package remains a preview wrapper;
-its low-level ctypes mirror tracks the full header, while Pythonic wrappers
-for the newly added v1 surfaces are follow-up work.
+with the first tagged release. The Python package now wraps every ABI v1
+surface listed in the table and runs its offline integration suite in CI. It
+is not yet published, and its Python-level API remains preview while packaging
+and downstream feedback settle.
 
 GitHub Actions runs the full test suite on Linux, macOS, and Windows across
-x86_64 and arm64 (six runners), plus formatting and differential-conformance
-jobs; Windows FFI artifacts target MinGW.
+x86_64 and arm64 (six runners), plus formatting, Python-wrapper, and
+differential-conformance jobs; Windows FFI artifacts target MinGW.
 
 ## Installing
 
@@ -73,7 +74,7 @@ exe_mod.addImport("anthropic", ai_dep.module("anthropic"));
 exe_mod.addImport("provider_utils", ai_dep.module("provider_utils"));
 ```
 
-Modules exposed: `ai`, `provider`, `provider_utils`, `anthropic`, `openai`,
+Modules exposed: `ai`, `provider`, `provider_utils`, `anthropic`, `google`, `openai`,
 `openai_compatible`, `openrouter`, `xai`, `mcp`. For C/Python:
 `zig build ffi` produces the platform-appropriate static/shared library
 under `zig-out/lib/` and installs `zig-out/include/ai.h`.

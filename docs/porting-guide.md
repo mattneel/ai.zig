@@ -497,7 +497,7 @@ research (`research/prototypes/cabi/`, findings in
 ## 16. Build and packaging
 
 - One root `build.zig` exposing named modules mirroring the npm graph:
-  `provider`, `provider_utils`, `ai`, `openai`, `anthropic`,
+  `provider`, `provider_utils`, `ai`, `openai`, `anthropic`, `google`,
   `openai_compatible`, `mcp`, wired with `mod.addImport`.
 - C ABI artifact: two `b.addLibrary` calls (`.linkage = .static` with
   `bundle_compiler_rt = true`, and `.dynamic` with `.version` for the
@@ -586,3 +586,14 @@ Track every deviation here; anything not listed is a bug.
     Fireworks retains its top-level string error shape and streamed-usage
     request, but its upstream `transformRequestBody` conveniences are not
     implicit; callers use wire-native snake_case provider options instead.
+19. The native Google provider resolves the upstream-canonical
+    `GOOGLE_GENERATIVE_AI_API_KEY` first, then accepts `GOOGLE_API_KEY` as an
+    ai.zig-only fallback for existing deployments and the repository's live
+    smoke environment. An explicit `api_key` still takes precedence over both.
+20. The Phase-12 native Google breadth slice exposes the pinned package's
+    `generateContent`/`streamGenerateContent` language model and
+    `embedContent`/`batchEmbedContents` embedding model. The upstream Google
+    image, video, speech, files, realtime, and Interactions surfaces remain
+    unsupported here, and Google is intentionally not added to the C FFI in
+    this change; those are separate follow-ups. Provider-V4 image lookup
+    therefore returns `NoSuchModelError`.

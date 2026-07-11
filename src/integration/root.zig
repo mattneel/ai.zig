@@ -5,6 +5,7 @@ const test_support = @import("test_support");
 const openai = @import("openai");
 const openai_compatible = @import("openai_compatible");
 const anthropic = @import("anthropic");
+const google = @import("google");
 const openrouter = @import("openrouter");
 const xai = @import("xai");
 const ai = @import("ai");
@@ -1758,6 +1759,129 @@ test "integration Anthropic rejects embedding model lookup" {
     try std.testing.expectEqual(.embedding_model, diagnostics.payload.no_such_model.model_type);
 }
 
+test "integration Google native object mode drives generateObject and streamObject" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"candidates":[{"content":{"parts":[{"text":"{\"answer\":\"ok\"}"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":3,"totalTokenCount":7}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"answer\\\":\"}]}}]}" },
+            .{ .data = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\\\"ok\\\"}\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":3,\"totalTokenCount\":7}}" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = google.createGoogleGenerativeAi(.{
+        .allocator = allocator,
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    const Shape = struct { answer: []const u8 };
+
+    var generate_model = try factory.chat("gemini-2.5-flash", null);
+    var generated = try ai.generateObject(io, allocator, .{
+        .model = .{ .model = generate_model.languageModel() },
+        .prompt = .{ .text = "Return answer ok." },
+        .schema = provider_utils.schemaFromType(Shape),
+    });
+    defer generated.deinit();
+    try std.testing.expectEqualStrings("ok", generated.object.object.get("answer").?.string);
+
+    var stream_model = try factory.chat("gemini-2.5-flash", null);
+    var streamed = try ai.streamObject(io, allocator, .{
+        .model = .{ .model = stream_model.languageModel() },
+        .prompt = .{ .text = "Return answer ok." },
+        .schema = provider_utils.schemaFromType(Shape),
+    });
+    defer streamed.deinit(io);
+    var partials = streamed.partialObjectStream();
+    var partial_count: usize = 0;
+    while (try partials.next(io)) |_| partial_count += 1;
+    try std.testing.expect(partial_count > 0);
+    try std.testing.expectEqualStrings("ok", (try streamed.object(io)).object.get("answer").?.string);
+
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    for (requests) |request| {
+        const body = try std.json.parseFromSliceLeaky(std.json.Value, request_arena.allocator(), request.body, .{});
+        const generation = body.object.get("generationConfig").?.object;
+        try std.testing.expectEqualStrings("application/json", generation.get("responseMimeType").?.string);
+        try std.testing.expect(generation.get("responseSchema") != null);
+    }
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
+test "integration ToolLoopAgent drives native Google Gemini through functionCall and functionResponse" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-weather-1","name":"weather","args":{"city":"Paris"}},"thoughtSignature":"sig-weather"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"candidates":[{"content":{"parts":[{"text":"Paris is sunny and 21 C."}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":5,"totalTokenCount":13}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = google.createGoogleGenerativeAi(.{
+        .allocator = allocator,
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var model = try factory.chat("gemini-2.5-flash", null);
+    var weather: LoopWeatherTool = .{};
+    const toolset = loopWeatherTools(&weather);
+    var agent = ai.ToolLoopAgent.init(.{
+        .model = .{ .model = model.languageModel() },
+        .instructions = .{ .text = "Call weather once, then answer." },
+        .tools = &toolset,
+    });
+    var result = try agent.generate(io, allocator, .{
+        .prompt = .{ .text = "What is the weather in Paris?" },
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", result.text());
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"functionCall\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"functionResponse\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"thoughtSignature\":\"sig-weather\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"id\":\"call-weather-1\"") != null);
+    for (requests) |request| {
+        const user_agent = recordedHeader(request.headers, "user-agent").?;
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig-agent/tool-loop") != null);
+        try std.testing.expect(std.mem.indexOf(u8, user_agent, "ai-sdk-zig/google/") != null);
+    }
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "integration ToolLoopAgent drives native OpenAI Chat through a two-step tool loop" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -2771,6 +2895,97 @@ test "live Google Gemini OpenAI-compatible generate and stream smoke" {
     try std.testing.expect(saw_finish);
     std.debug.print(
         "live Google Gemini OpenAI-compatible: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
+        .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
+    );
+}
+
+test "live Google native Gemini generate and stream smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Google native Gemini smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "GOOGLE_API_KEY") orelse {
+        std.debug.print("live Google native Gemini smoke skipped: GOOGLE_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = google.createGoogleGenerativeAi(.{
+        .allocator = allocator,
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "gemini-2.5-flash";
+    var chat = try factory.chat(model_id, null);
+    const prompt = [_]provider.Message{.{ .user = .{
+        .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }},
+    } }};
+    const options: provider.CallOptions = .{
+        .prompt = &prompt,
+        .max_output_tokens = 32,
+    };
+
+    var generate_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer generate_arena_state.deinit();
+    const generated = try chat.languageModel().doGenerate(
+        io,
+        generate_arena_state.allocator(),
+        &options,
+        null,
+    );
+    var generated_text_bytes: usize = 0;
+    for (generated.content) |content| switch (content) {
+        .text => |part| generated_text_bytes += part.text.len,
+        else => {},
+    };
+    try std.testing.expect(generated_text_bytes > 0);
+    try std.testing.expect(
+        generated.finish_reason.unified == .stop or
+            generated.finish_reason.unified == .length,
+    );
+
+    var stream_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer stream_arena_state.deinit();
+    const streamed = try chat.languageModel().doStream(
+        io,
+        stream_arena_state.allocator(),
+        &options,
+        null,
+    );
+    defer streamed.stream.deinit(io);
+    var stream_parts: usize = 0;
+    var text_deltas: usize = 0;
+    var streamed_text_bytes: usize = 0;
+    var saw_finish = false;
+    while (try streamed.stream.next(io)) |part| {
+        stream_parts += 1;
+        switch (part) {
+            .text_delta => |delta| {
+                text_deltas += 1;
+                streamed_text_bytes += delta.delta.len;
+            },
+            .finish => saw_finish = true,
+            .err => return error.LiveGoogleNativeProviderStreamError,
+            else => {},
+        }
+    }
+    try std.testing.expect(text_deltas > 0);
+    try std.testing.expect(streamed_text_bytes > 0);
+    try std.testing.expect(saw_finish);
+    std.debug.print(
+        "live Google native Gemini: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
         .{ model_id, generated_text_bytes, stream_parts, text_deltas, streamed_text_bytes },
     );
 }
