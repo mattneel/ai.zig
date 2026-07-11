@@ -58,6 +58,7 @@ test "Streamable HTTP dispatches JSON single and array responses" {
     const iface = transport.transport();
     iface.setCallbacks(.{ .ctx = &recorder, .on_message = Recorder.onMessage, .on_error = Recorder.onError });
     try iface.start(io);
+    defer iface.close(io) catch {};
     try waitForRequests(server, io, 1);
 
     try server.enqueue(.{
@@ -111,6 +112,7 @@ test "Streamable HTTP parses per-request SSE and invokes the deferred auth seam 
     const iface = transport.transport();
     iface.setCallbacks(.{ .ctx = &recorder, .on_message = Recorder.onMessage, .on_error = Recorder.onError });
     try iface.start(io);
+    defer iface.close(io) catch {};
     try waitForRequests(server, io, 1);
 
     try server.enqueue(.{ .status = .unauthorized, .content_type = "text/plain", .body = .{ .text = "unauthorized" } });
@@ -162,6 +164,7 @@ test "Streamable HTTP captures sessions, resumes inbound SSE, expires on 404, an
     const iface = transport.transport();
     iface.setCallbacks(.{ .ctx = &recorder, .on_message = Recorder.onMessage, .on_error = Recorder.onError });
     try iface.start(io);
+    defer iface.close(io) catch {};
     try waitForRequests(server, io, 1);
 
     try server.enqueue(.{
@@ -211,6 +214,7 @@ test "Streamable HTTP captures sessions, resumes inbound SSE, expires on 404, an
     defer expired_transport.deinit();
     const expired_iface = expired_transport.transport();
     try expired_iface.start(io);
+    defer expired_iface.close(io) catch {};
     try waitForRequests(server, io, requests.len + 1);
     try server.enqueue(.{ .status = .not_found, .content_type = "text/plain", .body = .{ .text = "gone" } });
     try std.testing.expectError(
@@ -231,6 +235,7 @@ test "Streamable HTTP captures sessions, resumes inbound SSE, expires on 404, an
     defer inbound_expired.deinit();
     const inbound_expired_iface = inbound_expired.transport();
     try inbound_expired_iface.start(io);
+    defer inbound_expired_iface.close(io) catch {};
     var expiry_waits: usize = 0;
     while (sessions.expired.load(.acquire) < 2 and expiry_waits < 500) : (expiry_waits += 1) {
         try io.sleep(.fromMilliseconds(1), .awake);
@@ -256,6 +261,7 @@ test "legacy SSE accepts endpoint then messages and rejects cross-origin endpoin
             .{ .event = "endpoint", .data = endpoint, .delay_ms = 20 },
             .{ .event = "message", .data = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}" },
         } },
+        .hold_open = true,
     });
     try server.enqueue(.{ .content_type = "application/json", .body = .{ .text = "{\"accepted\":true}" } });
     var transport = try sse_api.SseTransport.init(allocator, .{ .url = url });
@@ -264,9 +270,10 @@ test "legacy SSE accepts endpoint then messages and rejects cross-origin endpoin
     const iface = transport.transport();
     iface.setCallbacks(.{ .ctx = &recorder, .on_message = Recorder.onMessage, .on_error = Recorder.onError });
     try iface.start(io);
-    try iface.send(io, .{ .request = .{ .id = .{ .integer = 5 }, .method = "tools/list" } });
+    defer iface.close(io) catch {};
     try waitForMessages(&recorder, io, 1);
     try std.testing.expectEqual(1, recorder.last_id.load(.acquire));
+    try iface.send(io, .{ .request = .{ .id = .{ .integer = 5 }, .method = "tools/list" } });
     const requests = server.recordedRequests();
     try std.testing.expectEqual(2, requests.len);
     try std.testing.expectEqual(.POST, requests[1].method);
@@ -279,6 +286,7 @@ test "legacy SSE accepts endpoint then messages and rejects cross-origin endpoin
     });
     var rejected = try sse_api.SseTransport.init(allocator, .{ .url = url });
     defer rejected.deinit();
+    defer rejected.close(io) catch {};
     try std.testing.expectError(error.CrossOriginEndpoint, rejected.start(io));
     try rejected.close(io);
 }
@@ -315,6 +323,7 @@ test "legacy SSE retries a 401 through the deferred auth seam once" {
     defer transport.deinit();
     const iface = transport.transport();
     try iface.start(io);
+    defer iface.close(io) catch {};
     try std.testing.expectEqual(1, auth.calls);
     try iface.close(io);
 }

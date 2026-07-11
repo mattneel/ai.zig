@@ -1621,6 +1621,7 @@ test "RealtimeSession auto tool outputs request one response when response close
     try transport.outputs_done.wait(io);
     try std.testing.expectEqual(0, transport.response_create_count);
     try transport.emit(responseDone());
+    try transport.response_created.wait(io);
     try std.testing.expectEqual(1, transport.response_create_count);
 }
 

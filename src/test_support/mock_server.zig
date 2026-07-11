@@ -22,6 +22,7 @@ pub const CannedResponse = struct {
     content_type: []const u8,
     extra_headers: []const Header = &.{},
     body: Body,
+    hold_open: bool = false,
 };
 
 pub const RecordedRequest = struct {
@@ -42,6 +43,7 @@ pub const MockServer = struct {
     arena: std.heap.ArenaAllocator,
     listener: Io.net.Server,
     thread: ?std.Thread,
+    held_connections: Io.Group,
     stopping: std.atomic.Value(bool),
     mutex: Io.Mutex,
     responses: std.ArrayList(CannedResponse),
@@ -61,6 +63,7 @@ pub const MockServer = struct {
             .arena = .init(gpa),
             .listener = listener,
             .thread = null,
+            .held_connections = .init,
             .stopping = .init(false),
             .mutex = .init,
             .responses = .empty,
@@ -136,6 +139,7 @@ pub const MockServer = struct {
             thread.join();
             self.thread = null;
         }
+        self.held_connections.cancel(self.io);
     }
 
     pub fn deinit(self: *MockServer) void {
@@ -176,7 +180,19 @@ pub const MockServer = struct {
                     break :blk .{ .sse = owned_events };
                 },
             },
+            .hold_open = response.hold_open,
         };
+    }
+
+    fn takeHeldSseResponse(self: *MockServer) ?CannedResponse {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (self.next_response == self.responses.items.len) return null;
+        const response = self.responses.items[self.next_response];
+        if (!response.hold_open or response.body != .sse) return null;
+        self.next_response += 1;
+        return response;
     }
 
     fn takeResponse(self: *MockServer) ?CannedResponse {
@@ -268,6 +284,7 @@ pub const MockServer = struct {
                     if (event.event) |value| try response.writer.print("event: {s}\n", .{value});
                     if (event.id) |value| try response.writer.print("id: {s}\n", .{value});
                     try response.writer.print("data: {s}\n\n", .{event.data});
+                    if (canned.hold_open) try response.writer.flush();
                     try response.flush();
 
                     if (event.delay_ms != 0 and index + 1 < events.len) {
@@ -275,12 +292,16 @@ pub const MockServer = struct {
                         try self.io.sleep(.fromMilliseconds(delay_ms), .awake);
                     }
                 }
-                try response.end();
+                if (canned.hold_open) {
+                    _ = request.server.reader.in.discardRemaining() catch {};
+                } else {
+                    try response.end();
+                }
             },
         }
     }
 
-    fn serveConnection(self: *MockServer, stream: Io.net.Stream) !void {
+    fn serveConnection(self: *MockServer, stream: Io.net.Stream, canned_override: ?CannedResponse) !void {
         defer stream.close(self.io);
 
         var receive_buffer: [16 * 1024]u8 = undefined;
@@ -291,12 +312,18 @@ pub const MockServer = struct {
         var request = try server.receiveHead();
 
         try self.record(&request);
-        const response = self.takeResponse() orelse CannedResponse{
+        const response = canned_override orelse self.takeResponse() orelse CannedResponse{
             .status = .internal_server_error,
             .content_type = "text/plain",
             .body = .{ .text = "no canned response enqueued" },
         };
         try self.serveResponse(&request, response);
+    }
+
+    fn serveHeldConnection(self: *MockServer, stream: Io.net.Stream, response: CannedResponse) void {
+        self.serveConnection(stream, response) catch |err| {
+            if (!self.stopping.load(.acquire)) self.recordServeError(err);
+        };
     }
 
     fn serveLoop(self: *MockServer) !void {
@@ -309,7 +336,18 @@ pub const MockServer = struct {
                 stream.close(self.io);
                 return;
             }
-            self.serveConnection(stream) catch |err| {
+            if (self.takeHeldSseResponse()) |response| {
+                self.held_connections.concurrent(
+                    self.io,
+                    serveHeldConnection,
+                    .{ self, stream, response },
+                ) catch |err| {
+                    stream.close(self.io);
+                    return err;
+                };
+                continue;
+            }
+            self.serveConnection(stream, null) catch |err| {
                 self.recordServeError(err);
                 continue;
             };

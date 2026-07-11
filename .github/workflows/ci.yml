@@ -26,23 +26,29 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
+            test_target: ""
             build_target: ""
           - os: ubuntu-24.04-arm
             arch: arm64
+            test_target: ""
             build_target: ""
           - os: macos-latest
             arch: arm64
+            test_target: ""
             build_target: ""
           - os: macos-15-intel
             arch: x86_64
+            test_target: ""
             build_target: ""
           # The MSVC cross-compile pre-flight cannot supply libc for the FFI
           # libraries. Tests stay native; artifacts use Zig's MinGW target.
           - os: windows-latest
             arch: x86_64
+            test_target: ""
             build_target: -Dtarget=x86_64-windows-gnu
           - os: windows-11-arm
             arch: arm64
+            test_target: -Dtarget=aarch64-windows-gnu
             build_target: -Dtarget=aarch64-windows-gnu
 
     steps:
@@ -52,10 +58,33 @@ jobs:
       # With no version input, setup-zig reads minimum_zig_version from
       # build.zig.zon (currently 0.16.0).
       - name: Install Zig
+        if: matrix.os != 'windows-11-arm'
         uses: mlugg/setup-zig@v2
 
+      # Zig 0.16.0's native aarch64-windows compiler is miscompiled by LLVM
+      # (https://codeberg.org/ziglang/zig/issues/31865). The x86_64 compiler
+      # runs under Windows ARM emulation and correctly cross-compiles ARM64.
+      - name: Install Zig (Windows ARM workaround)
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $version = "0.16.0"
+          $archive = "zig-x86_64-windows-$version.zip"
+          $expectedSha256 = "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$version/$archive" -OutFile $archive
+          $actualSha256 = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) { throw "Zig archive checksum mismatch" }
+          Expand-Archive -Path $archive -DestinationPath zig-sdk
+          (Resolve-Path "zig-sdk/zig-x86_64-windows-$version").Path |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Toolchain info
+        run: |
+          zig version
+          zig env
+
       - name: Run tests
-        run: zig build test --summary all
+        run: zig build test ${{ matrix.test_target }} --summary all
 
       - name: Build modules and FFI libraries
         run: zig build ${{ matrix.build_target }} --summary all
