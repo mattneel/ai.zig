@@ -8,6 +8,9 @@ pub fn build(b: *std.Build) void {
         "test-filter",
         "Run tests whose names contain any of these substrings",
     ) orelse &.{};
+    const live = b.option(bool, "live", "Run live provider smoke tests") orelse false;
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "live", live);
 
     const provider = b.addModule("provider", .{
         .root_source_file = b.path("src/provider/root.zig"),
@@ -95,6 +98,10 @@ pub fn build(b: *std.Build) void {
     integration.addImport("provider", provider);
     integration.addImport("provider_utils", provider_utils);
     integration.addImport("test_support", test_support);
+    integration.addImport("openai_compatible", openai_compatible);
+    integration.addImport("anthropic", anthropic);
+    integration.addImport("openrouter", openrouter);
+    integration.addOptions("build_options", build_options);
 
     const modules = [_]Module{
         .{ .name = "provider", .test_step = "provider", .module = provider },

@@ -555,3 +555,8 @@ Track every deviation here; anything not listed is a bug.
     `parseJsonEventStream` merely drops the `[DONE]` chunk and keeps reading
     until the HTTP stream closes. No known provider emits events after
     `[DONE]`; terminating is strictly more defensive.
+15. The streaming tool-call tracker tolerates deltas whose first fragment
+    lacks an `id`, assigning a generated id — upstream's
+    `StreamingToolCallTracker` rejects them (`InvalidResponseDataError`).
+    Rationale: several openai-compatible vendors omit ids, and upstream's own
+    non-streaming path already falls back to `generateId()`.

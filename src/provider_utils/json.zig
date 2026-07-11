@@ -111,6 +111,45 @@ pub fn isParsableJson(input: []const u8) bool {
     return true;
 }
 
+/// Deep-clones a dynamic JSON value into `arena` while preserving object
+/// insertion order. Provider request bodies and metadata use this when their
+/// lifetime must cross the caller-owned options boundary.
+pub fn cloneValue(arena: Allocator, value: std.json.Value) Allocator.Error!std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |item| .{ .bool = item },
+        .integer => |item| .{ .integer = item },
+        .float => |item| .{ .float = item },
+        .number_string => |item| .{ .number_string = try arena.dupe(u8, item) },
+        .string => |item| .{ .string = try arena.dupe(u8, item) },
+        .array => |items| blk: {
+            var array = std.json.Array.init(arena);
+            for (items.items) |item| try array.append(try cloneValue(arena, item));
+            break :blk .{ .array = array };
+        },
+        .object => |items| blk: {
+            var object: std.json.ObjectMap = .empty;
+            var iterator = items.iterator();
+            while (iterator.next()) |entry| {
+                try object.put(
+                    arena,
+                    try arena.dupe(u8, entry.key_ptr.*),
+                    try cloneValue(arena, entry.value_ptr.*),
+                );
+            }
+            break :blk .{ .object = object };
+        },
+    };
+}
+
+/// Stringifies one dynamic JSON value as a minified allocator-owned document.
+pub fn stringifyValueAlloc(arena: Allocator, value: std.json.Value) Allocator.Error![]u8 {
+    var output: std.Io.Writer.Allocating = .init(arena);
+    defer output.deinit();
+    std.json.Stringify.value(value, .{}, &output.writer) catch return error.OutOfMemory;
+    return output.toOwnedSlice();
+}
+
 test "json parse safe and diagnostic paths" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -135,4 +174,21 @@ test "json parse safe and diagnostic paths" {
     );
     const validated = try validateTypes(Shape, arena, dynamic, null);
     try std.testing.expectEqualStrings("typed", validated.foo);
+}
+
+test "json dynamic clone and stringify preserve nested values" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const source = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "{\"a\":[1,{\"b\":true}]}",
+        .{},
+    );
+    const cloned = try cloneValue(arena, source);
+    try std.testing.expectEqualStrings(
+        "{\"a\":[1,{\"b\":true}]}",
+        try stringifyValueAlloc(arena, cloned),
+    );
 }

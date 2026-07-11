@@ -142,11 +142,13 @@ pub const HttpClientTransport = struct {
         if (spec.method.requestHasBody()) {
             const body = spec.body orelse "";
             state.request.transfer_encoding = .{ .content_length = body.len };
-            var writer = state.request.sendBody(&.{}) catch |err|
+            var writer = state.request.sendBodyUnflushed(&.{}) catch |err|
                 return writeFailure(arena, diag, spec.url, err);
             writer.writer.writeAll(body) catch |err|
                 return writeFailure(arena, diag, spec.url, err);
             writer.end() catch |err|
+                return writeFailure(arena, diag, spec.url, err);
+            state.request.connection.?.flush() catch |err|
                 return writeFailure(arena, diag, spec.url, err);
         } else {
             state.request.sendBodiless() catch |err|
