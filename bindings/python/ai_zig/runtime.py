@@ -46,4 +46,7 @@ class Runtime:
         self.close()
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except BaseException:
+            pass

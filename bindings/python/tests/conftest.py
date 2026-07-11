@@ -49,13 +49,18 @@ class CannedServer:
             def do_POST(self) -> None:
                 length = int(self.headers.get("content-length", "0"))
                 body = self.rfile.read(length)
+                content_type = self.headers.get("content-type", "")
+                request_json = None
+                if content_type.startswith("application/json"):
+                    request_json = json.loads(body.decode("utf-8"))
                 with owner.lock:
                     owner.requests.append(
                         {
                             "path": self.path,
                             "headers": dict(self.headers.items()),
+                            "content_type": content_type,
                             "body": body,
-                            "json": json.loads(body.decode("utf-8")),
+                            "json": request_json,
                         }
                     )
                     response = owner.responses.popleft()
@@ -65,6 +70,16 @@ class CannedServer:
                     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
                     self.send_response(status)
                     self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(encoded)))
+                    self.send_header("connection", "close")
+                    self.end_headers()
+                    self.wfile.write(encoded)
+                    return
+
+                if response[0] == "bytes":
+                    _, status, response_content_type, encoded = response
+                    self.send_response(status)
+                    self.send_header("content-type", response_content_type)
                     self.send_header("content-length", str(len(encoded)))
                     self.send_header("connection", "close")
                     self.end_headers()
@@ -111,6 +126,16 @@ class CannedServer:
         ]
         with self.lock:
             self.responses.append(("sse", normalized))
+
+    def enqueue_bytes(
+        self,
+        payload: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        status: int = 200,
+    ) -> None:
+        with self.lock:
+            self.responses.append(("bytes", status, content_type, payload))
 
     def close(self) -> None:
         self.httpd.shutdown()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -22,6 +23,7 @@ class Tool:
         self.input_schema = input_schema if input_schema is not None else {}
         self.execute = execute
         self.last_exception: BaseException | None = None
+        self._exception_lock = threading.Lock()
         self._name = BytesArg(name)
         self._description = BytesArg(description)
         schema_text = (
@@ -65,7 +67,8 @@ class Tool:
             out.contents.len = len(encoded)
             return int(Status.OK)
         except BaseException as exc:  # ctypes must never unwind through C.
-            self.last_exception = exc
+            with self._exception_lock:
+                self.last_exception = exc
             return int(Status.TOOL_ERROR)
 
 

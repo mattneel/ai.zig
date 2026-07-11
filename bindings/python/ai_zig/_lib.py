@@ -243,7 +243,10 @@ class TelemetryVTable(ctypes.Structure):
 
 
 class BytesArg:
-    def __init__(self, value: str | bytes | None):
+    def __init__(
+        self,
+        value: str | bytes | bytearray | memoryview | None,
+    ):
         if value is None:
             self.data = b""
             self.buffer = None

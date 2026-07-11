@@ -5,8 +5,9 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ._lib import BytesArg, lib, read_string
+from ._lib import BytesArg, lib
 from .providers import Model
+from ._results import consume_result_document
 from .tools import Tool, tool_array
 
 
@@ -26,6 +27,10 @@ _OPTION_NAMES = {
     "tools_context": "toolsContext",
     "runtime_context": "runtimeContext",
     "include_raw_chunks": "includeRawChunks",
+    "max_parallel_calls": "maxParallelCalls",
+    "max_images_per_call": "maxImagesPerCall",
+    "aspect_ratio": "aspectRatio",
+    "output_format": "outputFormat",
 }
 
 
@@ -37,7 +42,10 @@ def make_options(
     instructions: str | None = None,
     **values: Any,
 ) -> bytes:
-    document = dict(options or {})
+    document = {
+        _OPTION_NAMES.get(name, name): value
+        for name, value in (options or {}).items()
+    }
     if prompt is not None:
         document["prompt"] = prompt
     if messages is not None:
@@ -86,8 +94,4 @@ def generate_text(
         ctypes.byref(handle),
     )
     model.runtime._check(status)
-    try:
-        payload = read_string(lib.ai_result_json(handle))
-        return json.loads(payload.decode("utf-8"))
-    finally:
-        lib.ai_result_destroy(handle)
+    return consume_result_document(handle)
