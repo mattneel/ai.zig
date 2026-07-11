@@ -88,10 +88,44 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/ffi/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+        .pic = true,
     });
     ffi.addImport("ai", ai);
     ffi.addImport("provider", provider);
     ffi.addImport("provider_utils", provider_utils);
+    ffi.addImport("openai_compatible", openai_compatible);
+    ffi.addImport("openrouter", openrouter);
+    ffi.addImport("anthropic", anthropic);
+    const translated_header = b.addTranslateC(.{
+        .root_source_file = b.path("include/ai.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ffi.addImport("ai_c_header", translated_header.createModule());
+
+    const ffi_shared = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "ai",
+        .root_module = ffi,
+        .version = .{ .major = 0, .minor = 1, .patch = 0 },
+    });
+    ffi_shared.installHeader(b.path("include/ai.h"), "ai.h");
+    const install_ffi_shared = b.addInstallArtifact(ffi_shared, .{});
+
+    const ffi_static = b.addLibrary(.{
+        .linkage = .static,
+        .name = "ai",
+        .root_module = ffi,
+    });
+    ffi_static.bundle_compiler_rt = true;
+    const install_ffi_static = b.addInstallArtifact(ffi_static, .{});
+
+    b.getInstallStep().dependOn(&install_ffi_shared.step);
+    b.getInstallStep().dependOn(&install_ffi_static.step);
+    const ffi_build = b.step("ffi", "Build and install the C ABI libraries and header");
+    ffi_build.dependOn(&install_ffi_shared.step);
+    ffi_build.dependOn(&install_ffi_static.step);
 
     const test_support = b.createModule(.{
         .root_source_file = b.path("src/test_support/root.zig"),
@@ -99,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_support.addImport("provider_utils", provider_utils);
+    ffi.addImport("test_support", test_support);
 
     const integration = b.createModule(.{
         .root_source_file = b.path("src/integration/root.zig"),
