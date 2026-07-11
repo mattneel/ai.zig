@@ -137,10 +137,15 @@ const ToolContext = struct {
     ) anyerror!ai.tool.ToolOutput {
         const self: *ToolContext = @ptrCast(@alignCast(raw.?));
         const input_json = try provider.wire.stringifyAlloc(arena, input);
-        var output: types.ai_tool_result = .{ .ptr = null, .len = 0 };
+        var output: types.ai_tool_result = .{
+            .struct_size = @sizeOf(types.ai_tool_result),
+            .ptr = null,
+            .len = 0,
+        };
         const status = self.callback(self.user_data, input_json.ptr, input_json.len, &output);
         defer if (output.ptr != null) std.heap.c_allocator.free(output.ptr[0..output.len]);
         if (status != .ok) return types.errorFromStatus(status);
+        if (output.struct_size < types.minimumStructSize(types.ai_tool_result)) return error.InvalidArgumentError;
         if (output.ptr == null) return error.JSONParseError;
         const value = std.json.parseFromSliceLeaky(std.json.Value, arena, output.ptr[0..output.len], .{
             .allocate = .alloc_always,
@@ -211,9 +216,21 @@ pub fn parseTools(
     if (len == 0) return &.{};
     if (input == null) return invalid(diagnostics, "tools pointer is null", "tools", null);
 
+    const stride_ptr: [*c]const usize = @ptrCast(input);
+    const stride = stride_ptr[0];
+    if (stride < types.minimumStructSize(types.ai_tool)) {
+        return invalid(diagnostics, "tool struct_size is too small", "tools.structSize", null);
+    }
+    if (stride > std.math.maxInt(usize) / len) {
+        return invalid(diagnostics, "tool array size overflows", "tools.structSize", null);
+    }
     const contexts = try arena.alloc(ToolContext, len);
     const result = try arena.alloc(ai.NamedTool, len);
-    for (input[0..len], contexts, result) |source, *context, *destination| {
+    const bytes: [*]const u8 = @ptrCast(input);
+    for (contexts, result, 0..) |*context, *destination, index| {
+        const source_ptr: [*c]const types.ai_tool = @ptrCast(@alignCast(bytes + index * stride));
+        const source = types.readStruct(types.ai_tool, source_ptr) catch
+            return invalid(diagnostics, "tool struct_size is too small", "tools.structSize", null);
         const name = providers.requiredSlice(source.name_ptr, source.name_len) catch
             return invalid(diagnostics, "tool name is required", "tools.name", null);
         const description = providers.optionalSlice(source.description_ptr, source.description_len) catch

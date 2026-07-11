@@ -82,7 +82,9 @@ def anthropic(
 ) -> Provider:
     key = BytesArg(api_key)
     base = BytesArg(base_url)
-    config = AnthropicConfig(key.ptr, key.len, base.ptr, base.len)
+    config = AnthropicConfig(
+        ctypes.sizeof(AnthropicConfig), key.ptr, key.len, base.ptr, base.len
+    )
     handle = ctypes.c_void_p()
     status = lib.ai_provider_anthropic(runtime.handle, ctypes.byref(config), ctypes.byref(handle))
     runtime._check(status)
@@ -102,6 +104,7 @@ def openrouter(
     referer_arg = BytesArg(referer)
     title_arg = BytesArg(title)
     config = OpenRouterConfig(
+        ctypes.sizeof(OpenRouterConfig),
         key.ptr,
         key.len,
         base.ptr,
@@ -128,6 +131,7 @@ def openai_compatible(
     base = BytesArg(base_url)
     key = BytesArg(api_key)
     config = OpenAICompatibleConfig(
+        ctypes.sizeof(OpenAICompatibleConfig),
         name_arg.ptr,
         name_arg.len,
         base.ptr,

@@ -75,6 +75,7 @@
         "build.zig.zon",
         "src",
         "include",
+        "scripts",
         "LICENSE",
         "NOTICE",
         "README.md",

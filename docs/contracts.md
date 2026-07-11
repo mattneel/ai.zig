@@ -117,29 +117,98 @@ hostname that *resolves* to a private address is not caught at this layer
   receive/keepalive tasks — construction fails under a single-threaded Io
   rather than degrading.
 
-## C ABI (preview) lifetimes
+## C ABI v1 contract
 
-- Stream parts returned by `ai_stream_next` **borrow a per-stream scratch
-  arena valid until the next call on that stream** (or destroy); use
-  `ai_part_clone` + `ai_buf_free` to retain. One-shot results are
-  callee-allocated; free via the paired free functions.
-- `ai_stream_cancel` is safe from any thread and may race `ai_stream_next`
-  (that is its purpose). `ai_stream_destroy` must **not** race a
-  concurrent `next` — cancel, let the consumer return, then destroy.
-- Every export is total: failures are status codes + per-handle last-error;
-  no panic crosses the boundary. `ai_runtime` owns an `Io.Threaded` whose
-  init installs process-global SIGIO/SIGPIPE handlers (restored on
-  destroy) — visible to embedding hosts.
-- Unknown-to-your-header stream-part tags may appear as new
-  `ai_part_type` values in newer libraries: treat unrecognized values as
-  opaque and fall back to the part's JSON payload. (Numeric-value
-  stability across releases is an ABI v1 commitment, not yet made.)
+The header and library report the same packed `1.0.0` ABI version. Packing is
+8-bit major, 8-bit minor, 16-bit patch; clients compare the header's
+`AI_ABI_VERSION_MAJOR` with the high byte of `ai_abi_version()` before using
+the library. All `ai_status`, `ai_part_type`, and other public enum values are
+frozen: additions append, and released values are never renumbered or reused.
+The ELF SONAME is `libai.so.1`; an ABI break increments both the ABI major and
+SONAME major. Public dynamic symbols use only the `ai_` prefix.
+
+Caller-provided config, descriptor, callback, and extensible output structs
+start with `size_t struct_size`. Callers set it to `sizeof(struct)`. The v1
+library rejects a value smaller than the v1 prefix; it accepts a larger value
+and ignores its unknown tail. Future compatible fields append at the end.
+`ai_string` is the deliberate exception: it is a frozen two-word borrowed
+value returned by value, so changing it requires an ABI-major bump.
+
+Memory and errors:
+
+- Every fallible operation is total for recoverable failures: it returns an
+  `ai_status`.
+  Operations with an owning runtime or stream record a JSON error document;
+  pre-runtime validation and pure clone/blob helpers return status only. A
+  Zig panic still aborts the host; no language exception may unwind through
+  a C callback.
+- `ai_string` getters borrow storage from the documented owner. Result strings
+  last until result destruction; runtime/stream error strings last until the
+  next failure on that handle or destruction; ABI version text is static.
+- Ordinary pointer/length inputs are borrowed only for the call and are copied
+  when a returned handle needs them. The exceptions are explicitly retained
+  tool callback state and telemetry callback state described below.
+- `ai_stream_next` parts borrow per-stream scratch storage until the next call
+  on that stream or destruction. `ai_part_clone` clones the JSON field.
+- `ai_result_blob` and `ai_part_clone` allocate with the library boundary
+  allocator. Free their pointer/length with `ai_buf_free`. Tool callbacks
+  allocate successful `ai_tool_result.ptr` with `ai_alloc`; the SDK consumes
+  and frees it after the callback returns. Tool input JSON is borrowed only
+  during the callback.
+- Telemetry event/scope byte views are borrowed only during the callback. An
+  enter callback's opaque token remains client-owned and is returned unchanged
+  to the paired exit callback.
+- Options, schemas, object/embedding results, UI chunks, telemetry events, and
+  media metadata use canonical JSON at the ABI boundary. Image and speech
+  bytes use indexed result blobs; transcription audio is borrowed for its
+  blocking call only. Object schemas are syntax-checked and forwarded as raw
+  JSON Schema; because the C surface has no validator callback, applications
+  perform semantic JSON-Schema validation of returned objects when required.
+
+Handle ownership, thread safety, and destruction order:
+
+Unless a bullet explicitly permits a race, destroying a handle must not race
+an API call that is using that same caller-owned reference. Retained child
+references make parent-first teardown safe only after handle creation returns.
+
+- `ai_runtime`: thread-safe reference-counted root owning `std.Io.Threaded`.
+  Initialization installs process-global SIGIO/SIGPIPE handlers, restored at
+  final release. Children retain it, so the caller may drop its runtime
+  reference before children; no new child may be created through a dropped
+  reference.
+- `ai_provider`: immutable after construction and safe for concurrent model
+  creation. It retains the runtime. Models retain it, so provider destroy may
+  precede model destroy.
+- `ai_model`, `ai_embedding_model`, `ai_image_model`, `ai_speech_model`, and
+  `ai_transcription_model`: immutable, safe for concurrent blocking calls, and
+  retain their provider/runtime. Active results copy their final data; active
+  streams or agents retain the language model they use.
+- `ai_result`: immutable and safe for concurrent getters. Each getter borrows
+  until `ai_result_destroy`; destruction must not race a getter. Results retain
+  only the runtime, not provider/model handles.
+- `ai_stream`: exactly one consumer may call `ai_stream_next` at a time.
+  `ai_stream_cancel` is safe from any thread and may race a blocked `next`.
+  `ai_stream_destroy` must not race `next`: cancel, let the consumer return,
+  then destroy. A stream retains its runtime and source owner (model or agent).
+- `ai_agent`: immutable configuration after creation, safe for concurrent
+  runs, and retains its language model/runtime. Tool callback `user_data` and
+  callback code must stay valid until all agent runs/streams finish and the
+  agent is destroyed. Streams retain the agent; caller destroy order is
+  otherwise flexible.
+- `ai_telemetry_registration`: registration borrows callback code and
+  `user_data`. Callbacks may run concurrently on runtime pool threads. Unregister
+  is a thread-safe logical disable; an already-entered callback may still
+  finish, and storage/user data remain valid until `ai_telemetry_clear`.
+  Clear is process-global and must not race register/unregister; run it only
+  after operations that may hold a copied telemetry dispatcher have quiesced.
+  It invalidates registration handles and releases their retained runtimes.
+
+Unknown-to-your-header enum/tag values may appear from a newer library within
+the same ABI major. Treat them as opaque; stream consumers fall back to the
+part JSON document.
 
 ## Explicitly open (tracked in the roadmap)
 
-- ABI v1 policy: `AI_ABI_VERSION` + runtime query, tag-value stability,
-  struct size/version fields, SONAME policy, old-client/new-library
-  compatibility tests.
 - Differential conformance harness against the pinned TypeScript SDK with
   a published per-surface pass table.
 - Threat-model document (approvals, SSRF/DNS-rebinding, FFI embedding).

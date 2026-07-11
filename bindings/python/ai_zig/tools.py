@@ -32,6 +32,7 @@ class Tool:
         self._schema = BytesArg(schema_text)
         self._callback = ToolExecute(self._invoke)
         self._c_tool = CTool(
+            ctypes.sizeof(CTool),
             self._name.ptr,
             self._name.len,
             self._description.ptr,
@@ -59,6 +60,7 @@ class Tool:
                 return int(Status.OUT_OF_MEMORY)
             if encoded:
                 ctypes.memmove(ptr, encoded, len(encoded))
+            out.contents.struct_size = ctypes.sizeof(out.contents)
             out.contents.ptr = ptr
             out.contents.len = len(encoded)
             return int(Status.OK)

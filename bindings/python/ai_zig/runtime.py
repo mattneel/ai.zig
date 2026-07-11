@@ -11,7 +11,7 @@ class Runtime:
         self._handle = ctypes.c_void_p()
         if async_limit < 0 or concurrent_limit < 0:
             raise ValueError("runtime limits must be non-negative")
-        config = RuntimeConfig(async_limit, concurrent_limit)
+        config = RuntimeConfig(ctypes.sizeof(RuntimeConfig), async_limit, concurrent_limit)
         handle = ctypes.c_void_p()
         status = lib.ai_runtime_create(ctypes.byref(config), ctypes.byref(handle))
         if status != 0:

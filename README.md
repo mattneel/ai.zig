@@ -20,12 +20,12 @@ C ABI and Python bindings.
 | --- | --- | --- | --- | --- |
 | Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes |
 | Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes |
-| Structured output (Output strategies) | beta | Claude Haiku 4.5 | — | — |
-| Embeddings / reranking | beta | — (canned fixtures) | — | — |
-| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | — | — |
-| UI message stream + Chat client | beta | — (canned + in-process e2e) | — | — |
+| Structured output (Output strategies) | beta | Claude Haiku 4.5 | objects | — |
+| Embeddings / reranking | beta | — (canned fixtures) | embeddings | — |
+| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | yes | — |
+| UI message stream + Chat client | beta | — (canned + in-process e2e) | UI chunks | — |
 | MCP client (stdio / SSE / streamable HTTP) | beta | stdio live (child process); SSE + streamable HTTP via canned fixtures | — | — |
-| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | — | — |
+| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | image/speech/transcribe | — |
 | Providers: anthropic, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream | via generate/stream |
 | Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — |
 | Rust bindings | planned | — | — | — |
@@ -41,15 +41,17 @@ sharp edges.*
 test suite, but the Zig API may still change. `preview` means narrower
 coverage and no compatibility guarantee.
 
-The **C ABI and Python bindings are preview surfaces pending ABI v1.** A
-`yes` in their table columns means the feature is currently exposed through
-them; it does not imply cross-release ABI stability. A translate-c test
-locks the header against the current tree; cross-release compatibility (ABI
-versioning, tag-value stability, old-client-against-new-library tests) is
-the ABI v1 work tracked in the roadmap.
+The **C ABI v1 policy is implemented and enforced in-tree**: the build checks
+the header/runtime version query, frozen numeric tags, size-prefixed evolvable
+structs, SONAME and symbol visibility, and compiles and runs a frozen v1
+snapshot client. Cross-release verification against tagged artifacts begins
+with the first tagged release. The Python package remains a preview wrapper;
+its low-level ctypes mirror tracks the full header, while Pythonic wrappers
+for the newly added v1 surfaces are follow-up work.
 
-Built and tested on Linux (x86_64). macOS and Windows are expected to work
-given the stdlib foundations but are not yet exercised in CI.
+GitHub Actions runs the full test suite on Linux, macOS, and Windows across
+x86_64 and arm64 (six runners), plus formatting and differential-conformance
+jobs; Windows FFI artifacts target MinGW.
 
 ## Installing
 

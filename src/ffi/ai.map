@@ -1,0 +1,6 @@
+ai_1.0 {
+    global:
+        ai_*;
+    local:
+        *;
+};

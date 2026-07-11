@@ -243,15 +243,18 @@ live realtime smoke test.
 
 ## Phase 12 — FFI v1, wrappers, breadth
 
-- **ABI v1 policy** (prerequisite for calling the ABI stable):
+- ✅ **ABI v1 policy** (completed 2026-07-11; prerequisite for calling the ABI stable):
   `AI_ABI_VERSION` constant + runtime version-query export; committed
   numeric stability for every status code and stream-part tag; size/version
   fields on public extern structs; SONAME/symbol-visibility policy;
   documented ownership, thread-safety, and deinit-ordering rules for every
   handle (docs/contracts.md graduates from "preview" to "contract"); an
   ABI-compat suite that compiles **old C clients against new libraries**,
-  not just the current header against the current tree.
-- Complete C ABI surface (objects/embeddings/agent/chat/UI chunks as JSON,
+  not just the current header against the current tree. Because v1 is the
+  first ABI and no earlier tag exists, the suite starts from a committed,
+  header-independent v1 client snapshot; tagged artifacts join the matrix
+  after the first release.
+- ✅ Complete C ABI surface (completed 2026-07-11: objects/embeddings/agent/chat/UI chunks as JSON,
   telemetry vtable registration, media).
 - Idiomatic wrappers: Python package (ctypes/cffi, iterators over pull
   streams, context managers, documented GIL/exception/shutdown rules) and
@@ -259,6 +262,9 @@ live realtime smoke test.
 - Provider breadth via `openai_compatible` config table (groq, deepseek,
   mistral, togetherai, fireworks, …); `google` native provider; otel
   exporter module implementing the telemetry vtable (gen_ai SemConv).
+  - **2026-07-11 progress:** added table-driven Groq, DeepSeek, Mistral,
+    Together AI, and Fireworks presets plus shared parameterized factory and
+    MockServer chat conformance fixtures. Google and the otel exporter remain.
 
 **Accept:** ABI-compat suite green against a previous tagged artifact;
 wrapper test suites in CI; a third-party-style example app per wrapper;

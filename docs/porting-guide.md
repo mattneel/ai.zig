@@ -475,11 +475,11 @@ research (`research/prototypes/cabi/`, findings in
 - **Streaming**: pull model as primary — `ai_stream_next(stream, *out_part)`
   blocks on the internal `Io.Queue`; out-struct pointers **borrow a
   per-stream scratch arena valid until the next call** (the `std.json` Token
-  idiom), with `ai_part_clone`/`ai_part_free` for retention;
+  idiom), with `ai_part_clone` plus `ai_buf_free` for retention;
   `error.Closed` → `AI_STREAM_DONE`, `error.Canceled` → `AI_CANCELED`; a
-  `min=0` poll variant exists. Push model (callback + `user_data`,
-  `callconv(.c)`) as secondary. Cancelation from a foreign thread interrupts
-  a blocked producer in ~0.2 ms (validated).
+  foreign-thread `ai_stream_cancel` interrupts the producer and unblocks the
+  consumer. ABI v1 deliberately exposes only this pull surface; wrappers map
+  it to language-native iterators.
 - **Memory**: boundary buffers from `std.heap.c_allocator` with paired free
   exports; one-shot results (generateText final) use callee-allocated
   out-params.
@@ -567,3 +567,22 @@ Track every deviation here; anything not listed is a bug.
     the telemetry dispatcher's onStepEnd→onStepFinish fan-out, deprecated
     tool-output content variants beyond what conversion warnings require).
     A fresh SDK has no legacy consumers; only canonical names exist.
+17. The stable C ABI represents dynamically shaped object/embedding/media
+    results and UI chunks as canonical JSON, with image/speech bytes exposed
+    as indexed library-owned blobs. Raw object-schema documents are forwarded
+    to providers without a C validator callback, so wrappers validate returned
+    objects when needed. The typed Zig telemetry callbacks collapse to one
+    named JSON event callback plus enter/exit token hooks, and object/UI stream
+    variants use append-only generic C part tags. Language wrappers may
+    reconstruct typed values; the Zig core remains fully typed.
+18. Phase-12 vendor presets are explicitly the shared OpenAI-compatible
+    surface, not native-package replacements. The pinned Groq, DeepSeek, and
+    Mistral packages use native model implementations; their presets preserve
+    endpoint/auth conventions and compatibility-layer flags, while native-only
+    surfaces (for example Groq transcription and `x_groq` stream usage,
+    DeepSeek thinking metadata, and Mistral prompt/document/provider options)
+    remain outside these presets. Mistral embeddings retain the native
+    32-value/non-parallel limits and structured outputs default to non-strict.
+    Fireworks retains its top-level string error shape and streamed-usage
+    request, but its upstream `transformRequestBody` conveniences are not
+    implicit; callers use wire-native snake_case provider options instead.

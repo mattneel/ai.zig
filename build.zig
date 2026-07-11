@@ -141,6 +141,23 @@ pub fn build(b: *std.Build) void {
     ffi.addImport("openai_compatible", openai_compatible);
     ffi.addImport("openrouter", openrouter);
     ffi.addImport("anthropic", anthropic);
+    ffi.addImport("openai", openai);
+    ffi.addImport("xai", xai);
+    const ffi_artifact = b.createModule(.{
+        .root_source_file = b.path("src/ffi/root.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+        .link_libc = true,
+        .pic = true,
+    });
+    ffi_artifact.addImport("ai", ai);
+    ffi_artifact.addImport("provider", provider);
+    ffi_artifact.addImport("provider_utils", provider_utils);
+    ffi_artifact.addImport("openai_compatible", openai_compatible);
+    ffi_artifact.addImport("openrouter", openrouter);
+    ffi_artifact.addImport("anthropic", anthropic);
+    ffi_artifact.addImport("openai", openai);
+    ffi_artifact.addImport("xai", xai);
     const translated_header = b.addTranslateC(.{
         .root_source_file = b.path("include/ai.h"),
         .target = target,
@@ -151,25 +168,70 @@ pub fn build(b: *std.Build) void {
     const ffi_shared = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "ai",
-        .root_module = ffi,
-        .version = .{ .major = 0, .minor = 1, .patch = 0 },
+        .root_module = ffi_artifact,
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
     });
+    var ffi_symbol_check_step: ?*std.Build.Step = null;
+    if (target.result.os.tag == .linux) {
+        ffi_shared.setVersionScript(b.path("src/ffi/ai.map"));
+        const check_symbols = b.addSystemCommand(&.{ "sh", "scripts/check-ffi-symbols.sh" });
+        check_symbols.addFileArg(ffi_shared.getEmittedBin());
+        ffi_symbol_check_step = &check_symbols.step;
+    }
     ffi_shared.installHeader(b.path("include/ai.h"), "ai.h");
     const install_ffi_shared = b.addInstallArtifact(ffi_shared, .{});
 
     const ffi_static = b.addLibrary(.{
         .linkage = .static,
         .name = "ai",
-        .root_module = ffi,
+        .root_module = ffi_artifact,
     });
     ffi_static.bundle_compiler_rt = true;
     const install_ffi_static = b.addInstallArtifact(ffi_static, .{});
+
+    const header_smoke_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    header_smoke_module.addIncludePath(b.path("include"));
+    header_smoke_module.addCSourceFile(.{
+        .file = b.path("src/ffi/header_smoke.c"),
+        .flags = &.{"-std=c11"},
+    });
+    header_smoke_module.linkLibrary(ffi_shared);
+    const header_smoke = b.addExecutable(.{
+        .name = "ffi-header-smoke",
+        .root_module = header_smoke_module,
+    });
+    const run_header_smoke = b.addRunArtifact(header_smoke);
+
+    const abi_v1_client_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    abi_v1_client_module.addCSourceFile(.{
+        .file = b.path("src/ffi/abi_v1_snapshot_client.c"),
+        .flags = &.{"-std=c11"},
+    });
+    abi_v1_client_module.linkLibrary(ffi_shared);
+    const abi_v1_client = b.addExecutable(.{
+        .name = "ffi-abi-v1-client",
+        .root_module = abi_v1_client_module,
+    });
+    const run_abi_v1_client = b.addRunArtifact(abi_v1_client);
+    const ffi_abi_check = b.step("ffi-abi-check", "Compile and run C11 header and ABI-v1 client checks");
+    ffi_abi_check.dependOn(&run_header_smoke.step);
+    ffi_abi_check.dependOn(&run_abi_v1_client.step);
 
     b.getInstallStep().dependOn(&install_ffi_shared.step);
     b.getInstallStep().dependOn(&install_ffi_static.step);
     const ffi_build = b.step("ffi", "Build and install the C ABI libraries and header");
     ffi_build.dependOn(&install_ffi_shared.step);
     ffi_build.dependOn(&install_ffi_static.step);
+    ffi_build.dependOn(ffi_abi_check);
+    if (ffi_symbol_check_step) |step| ffi_build.dependOn(step);
 
     const test_support = b.createModule(.{
         .root_source_file = b.path("src/test_support/root.zig"),
@@ -177,6 +239,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_support.addImport("provider_utils", provider_utils);
+    openai_compatible.addImport("test_support", test_support);
     openai.addImport("test_support", test_support);
     ai.addImport("test_support", test_support);
     xai.addImport("test_support", test_support);
@@ -225,6 +288,8 @@ pub fn build(b: *std.Build) void {
     };
 
     const test_all = b.step("test", "Run all module tests");
+    test_all.dependOn(ffi_abi_check);
+    if (ffi_symbol_check_step) |step| test_all.dependOn(step);
     for (modules) |entry| {
         const object = b.addObject(.{
             .name = b.fmt("{s}-module", .{entry.name}),

@@ -4,6 +4,49 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * ai.zig C ABI v1
+ *
+ * ABI version packing is 8 bits major, 8 bits minor, 16 bits patch. Clients
+ * should compare AI_ABI_VERSION_MAJOR with ai_abi_version() >> 24 before use.
+ * The pre-v1 addition of struct_size to descriptors/configs is the only
+ * intentional source break recorded by this first stable header.
+ *
+ * Struct evolution: callers set struct_size to sizeof(the struct). The
+ * library rejects a value smaller than the v1 required prefix and accepts
+ * larger values while ignoring the unknown tail. New optional fields append
+ * at the end; fields are never inserted or reordered within an ABI major.
+ * ai_string is the sole fixed, non-extensible value view because it is
+ * returned by value; its two-word layout is frozen for the ABI major.
+ *
+ * Numeric freeze: every ai_status, ai_part_type, and public enum value is
+ * permanent. New values append only. Values are never renumbered or reused.
+ * Consumers must tolerate unknown newer values.
+ *
+ * ELF policy: the dynamic library SONAME is libai.so.<ABI major>; compatible
+ * minor/patch releases retain the SONAME, and an ABI break increments both
+ * AI_ABI_VERSION_MAJOR and the SONAME major. The dynamic library's public
+ * namespace contains only symbols beginning with ai_. Mach-O/PE equivalents
+ * follow the same ABI-major and symbol-prefix policy.
+ */
+
+#define AI_ABI_VERSION_MAJOR 1u
+#define AI_ABI_VERSION_MINOR 0u
+#define AI_ABI_VERSION_PATCH 0u
+#define AI_ABI_VERSION_PACK(major, minor, patch) \
+    ((((uint32_t)(major) & 0xffu) << 24) | \
+     (((uint32_t)(minor) & 0xffu) << 16) | \
+     ((uint32_t)(patch) & 0xffffu))
+#define AI_ABI_VERSION \
+    AI_ABI_VERSION_PACK(AI_ABI_VERSION_MAJOR, AI_ABI_VERSION_MINOR, \
+                        AI_ABI_VERSION_PATCH)
+
+#if defined(__GNUC__) || defined(__clang__)
+#define AI_API __attribute__((visibility("default")))
+#else
+#define AI_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,10 +54,16 @@ extern "C" {
 typedef struct ai_runtime ai_runtime;
 typedef struct ai_provider ai_provider;
 typedef struct ai_model ai_model;
+typedef struct ai_embedding_model ai_embedding_model;
+typedef struct ai_image_model ai_image_model;
+typedef struct ai_speech_model ai_speech_model;
+typedef struct ai_transcription_model ai_transcription_model;
 typedef struct ai_result ai_result;
 typedef struct ai_stream ai_stream;
+typedef struct ai_agent ai_agent;
+typedef struct ai_telemetry_registration ai_telemetry_registration;
 
-/** Stable status values. New values may be added without renumbering v0. */
+/** Frozen status values. Append-only; never renumber or reuse a value. */
 typedef enum ai_status {
     AI_OK = 0,
     AI_STREAM_DONE = 1,
@@ -37,7 +86,7 @@ typedef enum ai_status {
     AI_UNKNOWN = -1
 } ai_status;
 
-/** Public stream-part tags, in the same order as Zig TextStreamPart. */
+/** Frozen stream-part tags. Append-only; never renumber or reuse a value. */
 typedef enum ai_part_type {
     AI_PART_TEXT_START = 0,
     AI_PART_TEXT_END = 1,
@@ -65,22 +114,32 @@ typedef enum ai_part_type {
     AI_PART_ABORT = 23,
     AI_PART_ERROR = 24,
     AI_PART_RAW = 25,
+    AI_PART_OBJECT = 26,
+    AI_PART_UI_MESSAGE = 27,
     AI_PART_UNKNOWN = -1
 } ai_part_type;
 
-/** Borrowed byte string. The owning function documents its lifetime. */
+/** Native OpenAI language endpoint selection. Values are frozen. */
+typedef enum ai_openai_language_api {
+    AI_OPENAI_RESPONSES = 0,
+    AI_OPENAI_CHAT = 1,
+    AI_OPENAI_LANGUAGE_API_UNKNOWN = -1
+} ai_openai_language_api;
+
+/** Frozen two-word borrowed byte view. The producing function owns storage. */
 typedef struct ai_string {
     const unsigned char *ptr;
     size_t len;
 } ai_string;
 
-/** Runtime thread-pool limits. Zero selects the std.Io.Threaded default. */
 typedef struct ai_runtime_config {
+    size_t struct_size;
     size_t async_limit;
     size_t concurrent_limit;
 } ai_runtime_config;
 
 typedef struct ai_anthropic_config {
+    size_t struct_size;
     const unsigned char *api_key_ptr;
     size_t api_key_len;
     const unsigned char *base_url_ptr;
@@ -88,6 +147,7 @@ typedef struct ai_anthropic_config {
 } ai_anthropic_config;
 
 typedef struct ai_openrouter_config {
+    size_t struct_size;
     const unsigned char *api_key_ptr;
     size_t api_key_len;
     const unsigned char *base_url_ptr;
@@ -99,6 +159,7 @@ typedef struct ai_openrouter_config {
 } ai_openrouter_config;
 
 typedef struct ai_openai_compatible_config {
+    size_t struct_size;
     const unsigned char *name_ptr;
     size_t name_len;
     const unsigned char *base_url_ptr;
@@ -107,8 +168,33 @@ typedef struct ai_openai_compatible_config {
     size_t api_key_len;
 } ai_openai_compatible_config;
 
-/** Callback-owned output. Allocate ptr with ai_alloc; the SDK frees it. */
+typedef struct ai_openai_config {
+    size_t struct_size;
+    const unsigned char *api_key_ptr;
+    size_t api_key_len;
+    const unsigned char *base_url_ptr;
+    size_t base_url_len;
+    const unsigned char *organization_ptr;
+    size_t organization_len;
+    const unsigned char *project_ptr;
+    size_t project_len;
+    ai_openai_language_api language_api;
+} ai_openai_config;
+
+typedef struct ai_xai_config {
+    size_t struct_size;
+    const unsigned char *api_key_ptr;
+    size_t api_key_len;
+    const unsigned char *base_url_ptr;
+    size_t base_url_len;
+} ai_xai_config;
+
+/**
+ * Callback-owned output. The SDK sets struct_size; do not write beyond that
+ * reported prefix. Allocate ptr with ai_alloc; the SDK frees it.
+ */
 typedef struct ai_tool_result {
+    size_t struct_size;
     unsigned char *ptr;
     size_t len;
 } ai_tool_result;
@@ -119,12 +205,12 @@ typedef ai_status (*ai_tool_execute_fn)(void *user_data,
                                         ai_tool_result *out);
 
 /**
- * Function tool descriptor. All input strings and user_data must remain valid
- * for the enclosing generate call or stream lifetime. execute runs on an
- * std.Io.Threaded pool thread; language runtimes must attach that thread as
- * required (ctypes CFUNCTYPE acquires Python's GIL automatically).
+ * Tool strings and user_data must remain valid for an agent lifetime or the
+ * enclosing direct call/stream. execute may run concurrently on runtime pool
+ * threads. The SDK initializes out->struct_size before invoking execute.
  */
 typedef struct ai_tool {
+    size_t struct_size;
     const unsigned char *name_ptr;
     size_t name_len;
     const unsigned char *description_ptr;
@@ -135,8 +221,9 @@ typedef struct ai_tool {
     void *user_data;
 } ai_tool;
 
-/** Borrowed stream part, valid until the next ai_stream_next or destroy. */
+/** Borrowed stream part, valid until the next call on that stream/destroy. */
 typedef struct ai_part {
+    size_t struct_size;
     ai_part_type type;
     const unsigned char *json_ptr;
     size_t json_len;
@@ -144,107 +231,207 @@ typedef struct ai_part {
     size_t text_len;
 } ai_part;
 
-/** Returns a static lowercase name; unknown integer values return "unknown". */
-const char *ai_status_name(ai_status status);
+/** Library-owned bytes returned by ai_result_blob; free with ai_buf_free. */
+typedef struct ai_buffer {
+    size_t struct_size;
+    unsigned char *ptr;
+    size_t len;
+} ai_buffer;
 
-/** Library allocator for callback result buffers. Pair with ai_buf_free. */
-unsigned char *ai_alloc(size_t len);
+typedef struct ai_agent_config {
+    size_t struct_size;
+    const ai_tool *tools;
+    size_t tools_len;
+    const unsigned char *system_ptr;
+    size_t system_len;
+    uint32_t max_steps;
+} ai_agent_config;
 
-/** Frees a buffer allocated by ai_alloc or a cloning output function. */
-void ai_buf_free(const unsigned char *ptr, size_t len);
+/** Event/scope byte views are borrowed only for the callback invocation. */
+typedef void (*ai_telemetry_event_fn)(void *user_data,
+                                      const unsigned char *event_name,
+                                      size_t event_name_len,
+                                      const unsigned char *event_json,
+                                      size_t event_json_len);
+typedef void *(*ai_telemetry_enter_fn)(void *user_data,
+                                       const unsigned char *scope_name,
+                                       size_t scope_name_len,
+                                       const unsigned char *call_id,
+                                       size_t call_id_len);
+typedef void (*ai_telemetry_exit_fn)(void *user_data,
+                                     const unsigned char *scope_name,
+                                     size_t scope_name_len, void *token);
 
 /**
- * Creates a blocking FFI runtime over std.Io.Threaded. The runtime changes the
- * process-wide SIGIO and SIGPIPE handlers until its last child is destroyed.
- * Debug builds use a thread-safe Zig DebugAllocator (and report leaks at final
- * teardown); optimized builds use smp_allocator. Boundary buffers always use
- * the libc-compatible allocator exposed by ai_alloc/ai_buf_free.
- * It must outlive direct use of every child handle. Panics abort the host, so
- * exported entry points validate inputs and translate recoverable errors.
+ * Borrowed callbacks/user_data remain valid until ai_telemetry_clear. An
+ * enter token is client-owned and is returned unchanged to the paired exit.
  */
-ai_status ai_runtime_create(const ai_runtime_config *config, ai_runtime **out);
+typedef struct ai_telemetry_vtable {
+    size_t struct_size;
+    void *user_data;
+    ai_telemetry_event_fn on_event;
+    ai_telemetry_enter_fn enter;
+    ai_telemetry_exit_fn exit;
+} ai_telemetry_vtable;
 
-/** Releases the caller's runtime reference. Child handles retain it safely. */
-void ai_runtime_destroy(ai_runtime *runtime);
+AI_API uint32_t ai_abi_version(void);
+AI_API ai_string ai_abi_version_string(void);
+AI_API const char *ai_status_name(ai_status status);
+AI_API unsigned char *ai_alloc(size_t len);
+AI_API void ai_buf_free(const unsigned char *ptr, size_t len);
 
-/** Borrowed JSON error document, valid until the next failing runtime call. */
-ai_string ai_runtime_last_error(const ai_runtime *runtime);
+/**
+ * Creates a blocking std.Io.Threaded runtime. Zero limits select Zig defaults.
+ * The runtime changes process-wide SIGIO/SIGPIPE handlers until final release.
+ * Child handles retain it, so caller destroy order is flexible.
+ */
+AI_API ai_status ai_runtime_create(const ai_runtime_config *config,
+                                   ai_runtime **out);
+AI_API void ai_runtime_destroy(ai_runtime *runtime);
+/** Borrowed until the next failing runtime call or final runtime release. */
+AI_API ai_string ai_runtime_last_error(const ai_runtime *runtime);
 
-/** Creates an Anthropic provider. API keys are explicit; no environment read. */
-ai_status ai_provider_anthropic(ai_runtime *runtime,
-                                const ai_anthropic_config *config,
-                                ai_provider **out);
-
-/** Creates an OpenRouter provider. API keys are explicit; no environment read. */
-ai_status ai_provider_openrouter(ai_runtime *runtime,
-                                 const ai_openrouter_config *config,
-                                 ai_provider **out);
-
-/** Creates a generic OpenAI-compatible provider. api_key may be null/empty. */
-ai_status ai_provider_openai_compatible(
+AI_API ai_status ai_provider_anthropic(ai_runtime *runtime,
+                                       const ai_anthropic_config *config,
+                                       ai_provider **out);
+AI_API ai_status ai_provider_openrouter(ai_runtime *runtime,
+                                        const ai_openrouter_config *config,
+                                        ai_provider **out);
+AI_API ai_status ai_provider_openai_compatible(
     ai_runtime *runtime, const ai_openai_compatible_config *config,
     ai_provider **out);
+AI_API ai_status ai_provider_openai(ai_runtime *runtime,
+                                    const ai_openai_config *config,
+                                    ai_provider **out);
+AI_API ai_status ai_provider_xai(ai_runtime *runtime,
+                                 const ai_xai_config *config,
+                                 ai_provider **out);
+AI_API void ai_provider_destroy(ai_provider *provider);
 
-/** Releases a provider reference. Models retain their provider. */
-void ai_provider_destroy(ai_provider *provider);
+AI_API ai_status ai_provider_language_model(ai_provider *provider,
+                                            const unsigned char *model_id,
+                                            size_t model_id_len,
+                                            ai_model **out);
+AI_API void ai_model_destroy(ai_model *model);
+AI_API ai_status ai_provider_embedding_model(ai_provider *provider,
+                                             const unsigned char *model_id,
+                                             size_t model_id_len,
+                                             ai_embedding_model **out);
+AI_API void ai_embedding_model_destroy(ai_embedding_model *model);
+AI_API ai_status ai_provider_image_model(ai_provider *provider,
+                                         const unsigned char *model_id,
+                                         size_t model_id_len,
+                                         ai_image_model **out);
+AI_API void ai_image_model_destroy(ai_image_model *model);
+AI_API ai_status ai_provider_speech_model(ai_provider *provider,
+                                          const unsigned char *model_id,
+                                          size_t model_id_len,
+                                          ai_speech_model **out);
+AI_API void ai_speech_model_destroy(ai_speech_model *model);
+AI_API ai_status ai_provider_transcription_model(
+    ai_provider *provider, const unsigned char *model_id, size_t model_id_len,
+    ai_transcription_model **out);
+AI_API void ai_transcription_model_destroy(ai_transcription_model *model);
 
-/** Creates a language model. The model id is copied by the library. */
-ai_status ai_provider_language_model(ai_provider *provider,
-                                     const unsigned char *model_id,
-                                     size_t model_id_len, ai_model **out);
-
-/** Releases a language-model reference. Active streams retain their model. */
-void ai_model_destroy(ai_model *model);
-
+AI_API ai_status ai_generate_text(ai_runtime *runtime, ai_model *model,
+                                  const unsigned char *options_json,
+                                  size_t options_json_len,
+                                  const ai_tool *tools, size_t tools_len,
+                                  ai_result **out);
 /**
- * Runs generateText. options_json uses canonical camelCase wire names; prompt
- * is a string or messages is the canonical ModelMessage array. maxSteps maps
- * to the SDK step-count stop condition. The returned result owns all getters.
+ * schema_json is a raw JSON Schema document forwarded to the provider. The
+ * FFI validates schema syntax and generated JSON/object shape; it has no host
+ * schema-validator callback, so semantic JSON-Schema validation belongs in
+ * the language wrapper/application. ai_result_json contains the object and
+ * generation metadata.
  */
-ai_status ai_generate_text(ai_runtime *runtime, ai_model *model,
-                           const unsigned char *options_json,
-                           size_t options_json_len, const ai_tool *tools,
-                           size_t tools_len, ai_result **out);
+AI_API ai_status ai_generate_object(ai_runtime *runtime, ai_model *model,
+                                    const unsigned char *options_json,
+                                    size_t options_json_len,
+                                    const unsigned char *schema_json,
+                                    size_t schema_json_len, ai_result **out);
+/** Embedding result JSON contains values, vectors, usage, and metadata. */
+AI_API ai_status ai_embed(ai_runtime *runtime, ai_embedding_model *model,
+                          const unsigned char *value, size_t value_len,
+                          const unsigned char *options_json,
+                          size_t options_json_len, ai_result **out);
+AI_API ai_status ai_embed_many(ai_runtime *runtime, ai_embedding_model *model,
+                               const ai_string *values, size_t values_len,
+                               const unsigned char *options_json,
+                               size_t options_json_len, ai_result **out);
 
-/** Borrowed canonical GenerateTextResult JSON; valid until result destroy. */
-ai_string ai_result_json(const ai_result *result);
+/** Result getters borrow storage until ai_result_destroy. */
+AI_API ai_string ai_result_json(const ai_result *result);
+AI_API ai_string ai_result_text(const ai_result *result);
+AI_API ai_string ai_result_finish_reason(const ai_result *result);
+AI_API uint64_t ai_result_total_tokens(const ai_result *result);
+AI_API size_t ai_result_blob_count(const ai_result *result);
+AI_API ai_string ai_result_blob_media_type(const ai_result *result,
+                                           size_t index);
+AI_API ai_status ai_result_blob(const ai_result *result, size_t index,
+                                ai_buffer *out);
+AI_API void ai_result_destroy(ai_result *result);
 
-/** Borrowed final text; valid until result destroy. */
-ai_string ai_result_text(const ai_result *result);
+AI_API ai_status ai_stream_text(ai_runtime *runtime, ai_model *model,
+                                const unsigned char *options_json,
+                                size_t options_json_len,
+                                const ai_tool *tools, size_t tools_len,
+                                ai_stream **out);
+/** Same model call, converted through the core UI-message chunk adapter. */
+AI_API ai_status ai_stream_text_ui(ai_runtime *runtime, ai_model *model,
+                                   const unsigned char *options_json,
+                                   size_t options_json_len,
+                                   const ai_tool *tools, size_t tools_len,
+                                   ai_stream **out);
+AI_API ai_status ai_stream_object(ai_runtime *runtime, ai_model *model,
+                                  const unsigned char *options_json,
+                                  size_t options_json_len,
+                                  const unsigned char *schema_json,
+                                  size_t schema_json_len, ai_stream **out);
+/** Set out->struct_size before every call. Only one concurrent next is valid. */
+AI_API ai_status ai_stream_next(ai_stream *stream, ai_part *out);
+/** Thread-safe and intended to race a blocked ai_stream_next. */
+AI_API ai_status ai_stream_cancel(ai_stream *stream);
+AI_API ai_string ai_stream_last_error(const ai_stream *stream);
+/** Clones part JSON; free out_json->ptr/out_json->len with ai_buf_free. */
+AI_API ai_status ai_part_clone(const ai_part *part, ai_string *out_json);
+/** Must not race next; cancel, join the consumer, then destroy. */
+AI_API void ai_stream_destroy(ai_stream *stream);
 
-/** Borrowed unified finish-reason string; valid until result destroy. */
-ai_string ai_result_finish_reason(const ai_result *result);
+AI_API ai_status ai_agent_create(ai_runtime *runtime, ai_model *model,
+                                 const ai_agent_config *config,
+                                 ai_agent **out);
+AI_API ai_status ai_agent_run(ai_agent *agent,
+                              const unsigned char *options_json,
+                              size_t options_json_len, ai_result **out);
+AI_API ai_status ai_agent_stream(ai_agent *agent,
+                                 const unsigned char *options_json,
+                                 size_t options_json_len, ai_stream **out);
+AI_API void ai_agent_destroy(ai_agent *agent);
 
-/** Sum of known input and output tokens; missing counts contribute zero. */
-uint64_t ai_result_total_tokens(const ai_result *result);
+AI_API ai_status ai_telemetry_register(
+    ai_runtime *runtime, const ai_telemetry_vtable *callbacks,
+    ai_telemetry_registration **out);
+/** Logical, thread-safe disable; storage is reclaimed by ai_telemetry_clear. */
+AI_API void ai_telemetry_unregister(ai_telemetry_registration *registration);
+/** Do not race register/unregister; call after copied dispatchers quiesce. */
+AI_API void ai_telemetry_clear(void);
 
-/** Releases the result and all borrowed strings returned from it. */
-void ai_result_destroy(ai_result *result);
-
-/** Starts streamText on the runtime pool and returns a pull iterator handle. */
-ai_status ai_stream_text(ai_runtime *runtime, ai_model *model,
-                         const unsigned char *options_json,
-                         size_t options_json_len, const ai_tool *tools,
-                         size_t tools_len, ai_stream **out);
-
-/**
- * Blocks for one part. AI_OK fills out, AI_STREAM_DONE is normal EOF, and
- * other statuses describe failure. out fields borrow stream scratch storage.
- * Only one consumer may call ai_stream_next at a time.
- */
-ai_status ai_stream_next(ai_stream *stream, ai_part *out);
-
-/** Requests cancellation from any foreign thread and waits for quiescence. */
-ai_status ai_stream_cancel(ai_stream *stream);
-
-/** Borrowed JSON error document, valid until the next failing stream call. */
-ai_string ai_stream_last_error(const ai_stream *stream);
-
-/** Clones part->json_ptr/json_len with ai_alloc; pair with ai_buf_free. */
-ai_status ai_part_clone(const ai_part *part, ai_string *out_json);
-
-/** Cancels if needed, joins the producer, and releases the stream. */
-void ai_stream_destroy(ai_stream *stream);
+/** Metadata is JSON; generated image bytes are indexed result blobs. */
+AI_API ai_status ai_generate_image(ai_runtime *runtime, ai_image_model *model,
+                                   const unsigned char *options_json,
+                                   size_t options_json_len, ai_result **out);
+/** Metadata is JSON; generated audio bytes are an indexed result blob. */
+AI_API ai_status ai_generate_speech(ai_runtime *runtime,
+                                    ai_speech_model *model,
+                                    const unsigned char *options_json,
+                                    size_t options_json_len, ai_result **out);
+/** audio is borrowed only for this blocking call. */
+AI_API ai_status ai_transcribe(ai_runtime *runtime,
+                               ai_transcription_model *model,
+                               const unsigned char *audio, size_t audio_len,
+                               const unsigned char *options_json,
+                               size_t options_json_len, ai_result **out);
 
 #ifdef __cplusplus
 }

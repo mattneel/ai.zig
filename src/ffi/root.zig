@@ -9,6 +9,11 @@ pub const options = @import("options.zig");
 pub const wire_json = @import("wire_json.zig");
 pub const result = @import("result.zig");
 pub const stream = @import("stream.zig");
+pub const objects = @import("objects.zig");
+pub const embeddings = @import("embeddings.zig");
+pub const agent = @import("agent.zig");
+pub const telemetry = @import("telemetry.zig");
+pub const media = @import("media.zig");
 
 comptime {
     _ = runtime;
@@ -17,6 +22,11 @@ comptime {
     _ = wire_json;
     _ = result;
     _ = stream;
+    _ = objects;
+    _ = embeddings;
+    _ = agent;
+    _ = telemetry;
+    _ = media;
 }
 
 test "module declarations" {

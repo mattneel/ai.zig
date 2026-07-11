@@ -43,6 +43,7 @@ class Stream(Iterator[dict[str, Any]]):
         if not self._handle:
             raise StopIteration
         part = Part()
+        part.struct_size = ctypes.sizeof(Part)
         status = lib.ai_stream_next(self._handle, ctypes.byref(part))
         if status == Status.STREAM_DONE:
             self.close()

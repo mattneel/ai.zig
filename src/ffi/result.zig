@@ -29,16 +29,32 @@ pub const ResultDocument = struct {
     response_messages: []const ai.ModelMessage,
 };
 
+pub const BlobSource = struct {
+    bytes: []const u8,
+    media_type: []const u8,
+};
+
+const Blob = struct {
+    bytes: []const u8,
+    media_type: []const u8,
+};
+
+/// Common immutable result representation used by text, object, embedding,
+/// agent, and media calls. Core results are copied into this arena before
+/// their Zig-side arenas are released.
 pub const Result = struct {
     runtime: *runtime_api.Runtime,
-    value: ai.GenerateTextResult,
-    json: []u8,
+    arena_state: std.heap.ArenaAllocator,
+    json: []const u8,
+    text: []const u8,
+    finish_reason: []const u8,
+    total_tokens: u64,
+    blobs: []const Blob,
 
     fn deinit(self: *Result) void {
         const runtime = self.runtime;
         const allocator = runtime.allocator();
-        std.heap.c_allocator.free(self.json);
-        self.value.deinit();
+        self.arena_state.deinit();
         allocator.destroy(self);
         runtime.release();
     }
@@ -57,6 +73,51 @@ const TimeoutTracker = struct {
 
 pub fn fromHandle(handle: *types.ai_result) *Result {
     return @ptrCast(@alignCast(handle));
+}
+
+pub fn create(
+    runtime: *runtime_api.Runtime,
+    document: anytype,
+    text: []const u8,
+    finish_reason: []const u8,
+    total_tokens: u64,
+    blob_sources: []const BlobSource,
+) !*Result {
+    const allocator = runtime.allocator();
+    const self = try allocator.create(Result);
+    errdefer allocator.destroy(self);
+    self.runtime = runtime;
+    self.arena_state = .init(allocator);
+    errdefer self.arena_state.deinit();
+    const arena = self.arena_state.allocator();
+    self.json = try provider.wire.stringifyAlloc(arena, document);
+    self.text = try arena.dupe(u8, text);
+    self.finish_reason = try arena.dupe(u8, finish_reason);
+    self.total_tokens = total_tokens;
+    const blobs = try arena.alloc(Blob, blob_sources.len);
+    for (blob_sources, blobs) |source, *destination| destination.* = .{
+        .bytes = try arena.dupe(u8, source.bytes),
+        .media_type = try arena.dupe(u8, source.media_type),
+    };
+    self.blobs = blobs;
+    runtime.retain();
+    return self;
+}
+
+pub fn createFromGenerateText(
+    runtime: *runtime_api.Runtime,
+    generated: *ai.GenerateTextResult,
+) !*Result {
+    const document = try encodeResultDocument(generated);
+    const usage = generated.usage();
+    return create(
+        runtime,
+        document,
+        generated.text(),
+        wire_json.finishReasonName(generated.finishReason()),
+        (usage.input_tokens.total orelse 0) +| (usage.output_tokens.total orelse 0),
+        &.{},
+    );
 }
 
 pub export fn ai_generate_text(
@@ -111,20 +172,9 @@ pub export fn ai_generate_text(
         }
         return runtime.fail(err, &diagnostics);
     };
+    defer generated.deinit();
 
-    const json = encodeResult(&generated) catch |err| {
-        const status = runtime.fail(err, null);
-        generated.deinit();
-        return status;
-    };
-    const result = allocator.create(Result) catch |err| {
-        const status = runtime.fail(err, null);
-        std.heap.c_allocator.free(json);
-        generated.deinit();
-        return status;
-    };
-    runtime.retain();
-    result.* = .{ .runtime = runtime, .value = generated, .json = json };
+    const result = createFromGenerateText(runtime, &generated) catch |err| return runtime.fail(err, null);
     out.* = @ptrCast(result);
     return .ok;
 }
@@ -138,20 +188,57 @@ pub export fn ai_result_json(handle: ?*const types.ai_result) types.ai_string {
 pub export fn ai_result_text(handle: ?*const types.ai_result) types.ai_string {
     const value = handle orelse return types.empty_string;
     const result: *const Result = @ptrCast(@alignCast(value));
-    return types.string(result.value.text());
+    return types.string(result.text);
 }
 
 pub export fn ai_result_finish_reason(handle: ?*const types.ai_result) types.ai_string {
     const value = handle orelse return types.empty_string;
     const result: *const Result = @ptrCast(@alignCast(value));
-    return types.string(wire_json.finishReasonName(result.value.finishReason()));
+    return types.string(result.finish_reason);
 }
 
 pub export fn ai_result_total_tokens(handle: ?*const types.ai_result) u64 {
     const value = handle orelse return 0;
     const result: *const Result = @ptrCast(@alignCast(value));
-    const usage = result.value.usage();
-    return (usage.input_tokens.total orelse 0) +| (usage.output_tokens.total orelse 0);
+    return result.total_tokens;
+}
+
+pub export fn ai_result_blob_count(handle: ?*const types.ai_result) usize {
+    const value = handle orelse return 0;
+    const result: *const Result = @ptrCast(@alignCast(value));
+    return result.blobs.len;
+}
+
+pub export fn ai_result_blob_media_type(
+    handle: ?*const types.ai_result,
+    index: usize,
+) types.ai_string {
+    const value = handle orelse return types.empty_string;
+    const result: *const Result = @ptrCast(@alignCast(value));
+    if (index >= result.blobs.len) return types.empty_string;
+    return types.string(result.blobs[index].media_type);
+}
+
+pub export fn ai_result_blob(
+    handle: ?*const types.ai_result,
+    index: usize,
+    out: [*c]types.ai_buffer,
+) types.Status {
+    types.validateOutputStruct(types.ai_buffer, out) catch return .invalid_argument;
+    const requested_size = out[0].struct_size;
+    var output: types.ai_buffer = .{ .struct_size = requested_size, .ptr = null, .len = 0 };
+    types.writeOutputStruct(types.ai_buffer, out, output);
+    const value = handle orelse return .invalid_argument;
+    const result: *const Result = @ptrCast(@alignCast(value));
+    if (index >= result.blobs.len) return .invalid_argument;
+    const source = result.blobs[index].bytes;
+    if (source.len == 0) return .ok;
+    const copy = std.heap.c_allocator.alloc(u8, source.len) catch return .out_of_memory;
+    @memcpy(copy, source);
+    output.ptr = copy.ptr;
+    output.len = copy.len;
+    types.writeOutputStruct(types.ai_buffer, out, output);
+    return .ok;
 }
 
 pub export fn ai_result_destroy(handle: ?*types.ai_result) void {
@@ -159,7 +246,7 @@ pub export fn ai_result_destroy(handle: ?*types.ai_result) void {
     fromHandle(value).deinit();
 }
 
-fn encodeResult(result: *ai.GenerateTextResult) ![]u8 {
+fn encodeResultDocument(result: *ai.GenerateTextResult) !ResultDocument {
     const arena = result.arena_state.allocator();
     const steps = try arena.alloc(StepDocument, result.steps.len);
     for (result.steps, steps) |step, *destination| {
@@ -174,7 +261,7 @@ fn encodeResult(result: *ai.GenerateTextResult) ![]u8 {
             .response_messages = step.response.messages,
         };
     }
-    const document: ResultDocument = .{
+    return .{
         .text = result.text(),
         .content = try wire_json.contentValues(arena, result.content()),
         .steps = steps,
@@ -182,7 +269,6 @@ fn encodeResult(result: *ai.GenerateTextResult) ![]u8 {
         .finish_reason = result.finishReason(),
         .response_messages = result.responseMessages(),
     };
-    return provider.wire.stringifyAlloc(std.heap.c_allocator, document);
 }
 
 test "result document round-trips response messages through provider wire" {

@@ -138,6 +138,14 @@ pub export fn ai_status_name(status: types.Status) [*c]const u8 {
     return statusName(status).ptr;
 }
 
+pub export fn ai_abi_version() u32 {
+    return types.abi_version;
+}
+
+pub export fn ai_abi_version_string() types.ai_string {
+    return types.string(types.abi_version_string);
+}
+
 pub export fn ai_alloc(len: usize) [*c]u8 {
     if (len == 0) return null;
     const value = std.heap.c_allocator.alloc(u8, len) catch return null;
@@ -155,10 +163,15 @@ pub export fn ai_runtime_create(
 ) types.Status {
     if (out == null) return .invalid_argument;
     out.* = null;
-    const runtime = Runtime.create(if (config != null) config[0] else .{
-        .async_limit = 0,
-        .concurrent_limit = 0,
-    }) catch return .out_of_memory;
+    const value = if (config != null)
+        types.readStruct(types.ai_runtime_config, config) catch return .invalid_argument
+    else
+        types.ai_runtime_config{
+            .struct_size = @sizeOf(types.ai_runtime_config),
+            .async_limit = 0,
+            .concurrent_limit = 0,
+        };
+    const runtime = Runtime.create(value) catch return .out_of_memory;
     out.* = @ptrCast(runtime);
     return .ok;
 }
@@ -244,7 +257,11 @@ fn diagnosticsValue(arena: Allocator, diagnostics: *const provider.Diagnostics) 
 
 test "runtime debug allocator reports a clean standalone teardown" {
     last_runtime_deinit_clean.store(false, .release);
-    const runtime = try Runtime.create(.{ .async_limit = 0, .concurrent_limit = 0 });
+    const runtime = try Runtime.create(.{
+        .struct_size = @sizeOf(types.ai_runtime_config),
+        .async_limit = 0,
+        .concurrent_limit = 0,
+    });
     runtime.release();
     try std.testing.expect(last_runtime_deinit_clean.load(.acquire));
 }
