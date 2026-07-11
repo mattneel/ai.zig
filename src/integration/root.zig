@@ -780,6 +780,138 @@ test "integration generateText anthropic two-step tool round trip" {
     try std.testing.expectEqual(0, server.serveErrorCount());
 }
 
+test "integration streamText anthropic two-step streaming tool round trip" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-stream-loop-1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu-stream-weather-1\",\"name\":\"weather\",\"input\":{}}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-stream-loop-2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":9,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Paris is sunny and 21 C.\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":6}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-haiku", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var result = try ai.streamText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.loopFinished()},
+    });
+    defer result.deinit(io);
+
+    var tags: std.ArrayList(std.meta.Tag(ai.TextStreamPart)) = .empty;
+    defer tags.deinit(allocator);
+    while (try result.next(io)) |part| try tags.append(allocator, std.meta.activeTag(part));
+    try std.testing.expectEqualSlices(
+        std.meta.Tag(ai.TextStreamPart),
+        &.{
+            .start,
+            .start_step,
+            .tool_input_start,
+            .tool_input_delta,
+            .tool_input_end,
+            .tool_call,
+            .tool_result,
+            .finish_step,
+            .start_step,
+            .text_start,
+            .text_delta,
+            .text_end,
+            .finish_step,
+            .finish,
+        },
+        tags.items,
+    );
+    try std.testing.expectEqual(2, (try result.steps(io)).len);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", try result.text(io));
+    try std.testing.expectEqual(14, (try result.totalUsage(io)).input_tokens.total.?);
+    try std.testing.expectEqual(9, (try result.totalUsage(io)).output_tokens.total.?);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"tool_result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"tool_use_id\":\"toolu-stream-weather-1\"") != null);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
+test "integration streamText anthropic chunk timeout emits abort" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-timeout\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}", .delay_ms = 50 },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-haiku", null);
+    var result = try ai.streamText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "timeout" },
+        .timeout = .{ .granular = .{ .chunk_ms = 5 } },
+    });
+    defer result.deinit(io);
+
+    var tags: std.ArrayList(std.meta.Tag(ai.TextStreamPart)) = .empty;
+    defer tags.deinit(allocator);
+    var reason: ?[]const u8 = null;
+    while (try result.next(io)) |part| {
+        try tags.append(allocator, std.meta.activeTag(part));
+        if (part == .abort) reason = part.abort.reason;
+    }
+    try std.testing.expectEqualSlices(
+        std.meta.Tag(ai.TextStreamPart),
+        &.{ .start, .start_step, .abort },
+        tags.items,
+    );
+    try std.testing.expectEqualStrings("Chunk timeout after 5ms", reason.?);
+    try std.testing.expectError(error.Canceled, result.text(io));
+}
+
 test "integration generateText openai-compatible two-step tool round trip" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -1474,5 +1606,113 @@ test "live Anthropic generateText two-step tool loop" {
     std.debug.print(
         "live Anthropic tool loop: steps={d} tool_calls={d} executions={d} final_text_bytes={d} total_tokens={d}\n",
         .{ result.steps.len, result.toolCalls().len, weather.calls, result.text().len, total_tokens },
+    );
+}
+
+test "live Anthropic streamText two-step tool loop" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Anthropic streamText tool loop skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "ANTHROPIC_API_KEY") orelse {
+        std.debug.print("live Anthropic streamText tool loop skipped: API key absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = try anthropic.createAnthropic(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "claude-haiku-4-5-20251001";
+    var chat = try factory.messages(model_id, null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var result = try ai.streamText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .instructions = .{ .text = "Call the weather tool exactly once for the requested city. After the tool result, answer in one short sentence and do not call any more tools." },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.loopFinished()},
+        .max_output_tokens = 200,
+    });
+    defer result.deinit(io);
+
+    var part_count: usize = 0;
+    var text_delta_count: usize = 0;
+    var tool_call_count: usize = 0;
+    var tool_result_count: usize = 0;
+    var finish_step_count: usize = 0;
+    var finish_count: usize = 0;
+    var saw_start = false;
+    var saw_finish = false;
+    while (try result.next(io)) |part| {
+        if (part_count == 0) try std.testing.expect(part == .start);
+        try std.testing.expect(!saw_finish);
+        part_count += 1;
+        switch (part) {
+            .start => {
+                try std.testing.expect(!saw_start);
+                saw_start = true;
+            },
+            .text_delta => |value| {
+                if (value.text.len != 0) text_delta_count += 1;
+            },
+            .tool_call => tool_call_count += 1,
+            .tool_result => |value| if (!value.preliminary) {
+                tool_result_count += 1;
+            },
+            .finish_step => finish_step_count += 1,
+            .finish => {
+                finish_count += 1;
+                saw_finish = true;
+            },
+            .abort => return error.LiveStreamAborted,
+            .err => return error.LiveProviderStreamError,
+            else => {},
+        }
+    }
+    const steps = try result.steps(io);
+    const final_text = try result.text(io);
+    const total_usage = try result.totalUsage(io);
+    const total_tokens = (total_usage.input_tokens.total orelse 0) +
+        (total_usage.output_tokens.total orelse 0);
+    try std.testing.expect(saw_start);
+    try std.testing.expect(saw_finish);
+    try std.testing.expect(text_delta_count >= 1);
+    try std.testing.expect(tool_call_count >= 1);
+    try std.testing.expect(tool_result_count >= 1);
+    try std.testing.expectEqual(2, finish_step_count);
+    try std.testing.expectEqual(1, finish_count);
+    try std.testing.expectEqual(2, steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expect(final_text.len > 0);
+    try std.testing.expect(total_tokens > 0);
+    std.debug.print(
+        "live Anthropic streamText tool loop: parts={d} text_deltas={d} tool_calls={d} tool_results={d} finish_steps={d} finishes={d} executions={d} final_text_bytes={d} total_tokens={d}\n",
+        .{
+            part_count,
+            text_delta_count,
+            tool_call_count,
+            tool_result_count,
+            finish_step_count,
+            finish_count,
+            weather.calls,
+            final_text.len,
+            total_tokens,
+        },
     );
 }

@@ -91,15 +91,15 @@ pub const StreamError = struct {
 /// exhaustive so upstream additions become compile failures.
 pub const TextStreamPart = union(enum) {
     text_start: TextBlockBoundary,
-    text_delta: TextDelta,
     text_end: TextBlockBoundary,
+    text_delta: TextDelta,
     reasoning_start: TextBlockBoundary,
-    reasoning_delta: TextDelta,
     reasoning_end: TextBlockBoundary,
+    reasoning_delta: TextDelta,
     custom: Custom,
     tool_input_start: ToolInputStart,
-    tool_input_delta: ToolInputDelta,
     tool_input_end: ToolInputEnd,
+    tool_input_delta: ToolInputDelta,
     source: provider.Source,
     file: provider.GeneratedFile,
     reasoning_file: provider.GeneratedReasoningFile,
@@ -153,15 +153,15 @@ pub const ToolExecutionEnd = struct {
 /// and Phase 5b step-assembly stages.
 pub const LanguageModelStreamPart = union(enum) {
     text_start: TextBlockBoundary,
-    text_delta: TextDelta,
     text_end: TextBlockBoundary,
+    text_delta: TextDelta,
     reasoning_start: TextBlockBoundary,
-    reasoning_delta: TextDelta,
     reasoning_end: TextBlockBoundary,
+    reasoning_delta: TextDelta,
     custom: Custom,
     tool_input_start: ToolInputStart,
-    tool_input_delta: ToolInputDelta,
     tool_input_end: ToolInputEnd,
+    tool_input_delta: ToolInputDelta,
     source: provider.Source,
     file: provider.GeneratedFile,
     reasoning_file: provider.GeneratedReasoningFile,
@@ -206,15 +206,15 @@ pub fn calculateChunkTimingStats(allocator: std.mem.Allocator, timings_ms: []con
 fn classify(part: TextStreamPart) usize {
     return switch (part) {
         .text_start => 0,
-        .text_delta => 1,
-        .text_end => 2,
+        .text_end => 1,
+        .text_delta => 2,
         .reasoning_start => 3,
-        .reasoning_delta => 4,
-        .reasoning_end => 5,
+        .reasoning_end => 4,
+        .reasoning_delta => 5,
         .custom => 6,
         .tool_input_start => 7,
-        .tool_input_delta => 8,
-        .tool_input_end => 9,
+        .tool_input_end => 8,
+        .tool_input_delta => 9,
         .source => 10,
         .file => 11,
         .reasoning_file => 12,
@@ -236,7 +236,7 @@ fn classify(part: TextStreamPart) usize {
 
 test "TextStreamPart vocabulary switch is exhaustive" {
     try std.testing.expectEqual(21, classify(.{ .start = {} }));
-    try std.testing.expectEqual(1, classify(.{ .text_delta = .{ .id = "t", .text = "x" } }));
+    try std.testing.expectEqual(2, classify(.{ .text_delta = .{ .id = "t", .text = "x" } }));
 }
 
 test "nearest-rank percentiles and chunk timing stats match hand-computed fixture" {

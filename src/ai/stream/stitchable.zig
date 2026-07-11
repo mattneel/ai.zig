@@ -42,6 +42,17 @@ pub fn Stitchable(comptime T: type) type {
             };
         }
 
+        /// Initializes the explicit pull-only mode. No producer task is
+        /// spawned, so downstream awaited callbacks apply backpressure all the
+        /// way to the active child. `streamText` uses this mode.
+        pub fn initInline(self: *Self, outer_buffer: []T, inner_buffer: []*Child) void {
+            self.* = .{
+                .outer = .init(outer_buffer),
+                .inner = .init(inner_buffer),
+                .mode = .inline_mode,
+            };
+        }
+
         pub fn deinit(self: *Self, io: std.Io) void {
             self.terminate(io);
             self.* = undefined;

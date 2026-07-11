@@ -137,6 +137,7 @@ pub const EndEvent = struct {
 
 pub const AbortEvent = struct {
     call_id: []const u8,
+    steps: []const text_types.StepResult = &.{},
     reason: ?[]const u8 = null,
 };
 

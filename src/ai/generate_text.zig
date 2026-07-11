@@ -12,6 +12,7 @@ const events = @import("events.zig");
 const logger = @import("logger.zig");
 const message = @import("message.zig");
 const prompt_api = @import("prompt.zig");
+const response_message_builder = @import("response_messages.zig");
 const registry = @import("registry.zig");
 const telemetry = @import("telemetry.zig");
 const tool_api = @import("tool.zig");
@@ -41,6 +42,8 @@ pub const TimeoutConfiguration = union(enum) {
     pub const Granular = struct {
         total_ms: ?u64 = null,
         step_ms: ?u64 = null,
+        /// Maximum gap between provider stream parts. Used by `streamText`.
+        chunk_ms: ?u64 = null,
         tool_ms: ?u64 = null,
         tools: []const ToolTimeout = &.{},
     };
@@ -56,6 +59,13 @@ pub const TimeoutConfiguration = union(enum) {
         return switch (self) {
             .total_ms => null,
             .granular => |value| value.step_ms,
+        };
+    }
+
+    pub fn chunkMs(self: TimeoutConfiguration) ?u64 {
+        return switch (self) {
+            .total_ms => null,
+            .granular => |value| value.chunk_ms,
         };
     }
 
@@ -321,6 +331,53 @@ const CallState = struct {
     }
 };
 
+/// Shared pre-step approval replay used by blocking and streaming generation.
+/// Returned messages borrow `context.arena`.
+pub const InitialApprovalReplayContext = struct {
+    io: std.Io,
+    gpa: Allocator,
+    arena: Allocator,
+    options: GenerateTextOptions,
+    dispatcher: *telemetry.Dispatcher,
+    id_generator: *provider_utils.IdGenerator,
+    call_id: []const u8,
+    initial_messages: []const message.ModelMessage,
+    initial_instructions: ?prompt_api.Instructions,
+    tools_context: ?std.json.Value,
+    runtime_context: ?std.json.Value,
+};
+
+pub const InitialApprovalReplayResult = struct {
+    current_messages: []const message.ModelMessage,
+    response_messages: []const message.ModelMessage,
+};
+
+pub fn replayInitialToolApprovals(
+    context: InitialApprovalReplayContext,
+) provider.CallError!InitialApprovalReplayResult {
+    var state: CallState = .{
+        .io = context.io,
+        .gpa = context.gpa,
+        .arena = context.arena,
+        .options = context.options,
+        .dispatcher = context.dispatcher.*,
+        .id_generator = context.id_generator.*,
+        .call_id = context.call_id,
+        .initial_messages = context.initial_messages,
+        .initial_instructions = context.initial_instructions,
+        .current_messages = context.initial_messages,
+        .current_instructions = context.initial_instructions,
+        .current_tools_context = context.tools_context,
+        .current_runtime_context = context.runtime_context,
+    };
+    try replayToolApprovals(&state);
+    context.id_generator.* = state.id_generator;
+    return .{
+        .current_messages = state.current_messages,
+        .response_messages = try state.initial_response_messages.toOwnedSlice(context.arena),
+    };
+}
+
 pub fn generateText(
     io: std.Io,
     gpa: Allocator,
@@ -473,7 +530,24 @@ fn runCall(state: *CallState) provider.CallError!CallData {
         "onStart",
     );
 
-    try replayToolApprovals(state);
+    const approval_replay = try replayInitialToolApprovals(.{
+        .io = state.io,
+        .gpa = state.gpa,
+        .arena = state.arena,
+        .options = state.options,
+        .dispatcher = &state.dispatcher,
+        .id_generator = &state.id_generator,
+        .call_id = state.call_id,
+        .initial_messages = state.initial_messages,
+        .initial_instructions = state.initial_instructions,
+        .tools_context = state.current_tools_context,
+        .runtime_context = state.current_runtime_context,
+    });
+    state.current_messages = approval_replay.current_messages;
+    for (approval_replay.response_messages) |response_message| {
+        try state.initial_response_messages.append(state.arena, response_message);
+        try state.accumulated_response_messages.append(state.arena, response_message);
+    }
 
     var natural_continue = true;
     while (natural_continue) {
@@ -928,9 +1002,12 @@ fn executeStep(
     try step.derive(state.arena);
 
     const next_messages = try concatMessages(state.arena, step_messages, response_messages);
-    const accounted_outputs = outputs.items.len + approvals.denied_count;
-    const should_continue = (client_calls.items.len > 0 and accounted_outputs == client_calls.items.len) or
-        state.pending_deferred.count() > 0;
+    const should_continue = tool_common.shouldContinue(
+        client_calls.items.len,
+        outputs.items.len,
+        approvals.denied_count,
+        state.pending_deferred.count(),
+    );
 
     return .{
         .step = step,
@@ -1099,10 +1176,6 @@ fn findTool(tools: tool_api.ToolSet, name: []const u8) ?*const tool_api.NamedToo
     return tool_common.findTool(tools, name);
 }
 
-fn emptyJsonObject() std.json.Value {
-    return .{ .object = .empty };
-}
-
 fn assembleContent(
     state: *CallState,
     provider_content: []const provider.Content,
@@ -1234,215 +1307,11 @@ fn toResponseMessages(
     state: *CallState,
     input_content: []const ContentPart,
 ) provider.CallError![]const message.ModelMessage {
-    var result: std.ArrayList(message.ModelMessage) = .empty;
-    defer result.deinit(state.arena);
-    var assistant: std.ArrayList(message.AssistantContentPart) = .empty;
-    defer assistant.deinit(state.arena);
-    var tool_content: std.ArrayList(message.ToolContentPart) = .empty;
-    defer tool_content.deinit(state.arena);
-    var call_order: std.ArrayList([]const u8) = .empty;
-    defer call_order.deinit(state.arena);
-
-    for (input_content) |part| switch (part) {
-        .source => {},
-        .text => |value| if (value.text.len != 0) try assistant.append(state.arena, .{ .text = .{
-            .text = value.text,
-            .provider_options = value.provider_metadata,
-        } }),
-        .reasoning => |value| try assistant.append(state.arena, .{ .reasoning = .{
-            .text = value.text,
-            .provider_options = value.provider_metadata,
-        } }),
-        .custom => |value| try assistant.append(state.arena, .{ .custom = .{
-            .kind = value.kind,
-            .provider_options = value.provider_metadata,
-        } }),
-        .file => |value| try assistant.append(state.arena, .{ .file = generatedFileMessage(value) }),
-        .reasoning_file => |value| try assistant.append(state.arena, .{ .reasoning_file = generatedReasoningFileMessage(value) }),
-        .tool_call => |value| {
-            if (orderOf(call_order.items, value.tool_call_id) == null) try call_order.append(state.arena, value.tool_call_id);
-            try assistant.append(state.arena, .{ .tool_call = .{
-                .tool_call_id = value.tool_call_id,
-                .tool_name = value.tool_name,
-                .input = if (value.invalid and value.input != .object) emptyJsonObject() else value.input,
-                .provider_executed = value.provider_executed,
-                .provider_options = value.provider_metadata,
-            } });
-        },
-        .tool_result => |value| if (value.provider_executed) {
-            const model_output = prompt_api.createToolModelOutput(
-                state.arena,
-                value.tool_call_id,
-                value.input orelse std.json.Value.null,
-                value.output,
-                if (findTool(state.options.tools, value.tool_name)) |named| &named.tool else null,
-                .none,
-            ) catch |err| return mapAnyError(state, err, "failed to convert tool result");
-            try assistant.append(state.arena, .{ .tool_result = .{
-                .tool_call_id = value.tool_call_id,
-                .tool_name = value.tool_name,
-                .output = model_output,
-                .provider_options = value.provider_metadata,
-            } });
-        },
-        .tool_error => |value| if (value.provider_executed) {
-            const model_output = prompt_api.createToolModelOutput(
-                state.arena,
-                value.tool_call_id,
-                value.input orelse std.json.Value.null,
-                value.error_value,
-                if (findTool(state.options.tools, value.tool_name)) |named| &named.tool else null,
-                .json,
-            ) catch |err| return mapAnyError(state, err, "failed to convert provider tool error");
-            try assistant.append(state.arena, .{ .tool_result = .{
-                .tool_call_id = value.tool_call_id,
-                .tool_name = value.tool_name,
-                .output = model_output,
-                .provider_options = value.provider_metadata,
-            } });
-        },
-        .tool_approval_request => |value| try assistant.append(state.arena, .{ .tool_approval_request = .{
-            .approval_id = value.approval_id,
-            .tool_call_id = value.tool_call.tool_call_id,
-            .is_automatic = value.is_automatic,
-            .signature = value.signature,
-        } }),
-        .tool_approval_response => {},
-    };
-
-    if (assistant.items.len != 0) try result.append(state.arena, .{ .assistant = .{
-        .content = .{ .parts = try assistant.toOwnedSlice(state.arena) },
-    } });
-
-    for (input_content) |part| switch (part) {
-        .tool_approval_response => |value| {
-            try tool_content.append(state.arena, .{ .tool_approval_response = .{
-                .approval_id = value.approval_id,
-                .approved = value.approved,
-                .reason = value.reason,
-                .provider_executed = value.provider_executed,
-            } });
-            if (!value.approved) try tool_content.append(state.arena, .{ .tool_result = .{
-                .tool_call_id = value.tool_call.tool_call_id,
-                .tool_name = value.tool_call.tool_name,
-                .output = .{ .execution_denied = .{ .reason = value.reason } },
-            } });
-        },
-        .tool_result => |value| if (!value.provider_executed) {
-            const model_output = prompt_api.createToolModelOutput(
-                state.arena,
-                value.tool_call_id,
-                value.input orelse std.json.Value.null,
-                value.output,
-                if (findTool(state.options.tools, value.tool_name)) |named| &named.tool else null,
-                .none,
-            ) catch |err| return mapAnyError(state, err, "failed to convert tool result");
-            try tool_content.append(state.arena, .{ .tool_result = .{
-                .tool_call_id = value.tool_call_id,
-                .tool_name = value.tool_name,
-                .output = model_output,
-                .provider_options = value.provider_metadata,
-            } });
-        },
-        .tool_error => |value| if (!value.provider_executed) {
-            const model_output = prompt_api.createToolModelOutput(
-                state.arena,
-                value.tool_call_id,
-                value.input orelse std.json.Value.null,
-                value.error_value,
-                if (findTool(state.options.tools, value.tool_name)) |named| &named.tool else null,
-                .text,
-            ) catch |err| return mapAnyError(state, err, "failed to convert tool error");
-            try tool_content.append(state.arena, .{ .tool_result = .{
-                .tool_call_id = value.tool_call_id,
-                .tool_name = value.tool_name,
-                .output = model_output,
-                .provider_options = value.provider_metadata,
-            } });
-        },
-        else => {},
-    };
-
-    if (tool_content.items.len != 0) {
-        const sorted = try sortToolResults(state.arena, tool_content.items, call_order.items);
-        try result.append(state.arena, .{ .tool = .{ .content = sorted } });
-    }
-    return result.toOwnedSlice(state.arena);
-}
-
-const SortableToolResult = struct {
-    part: message.ToolContentPart,
-    original_index: usize,
-    order: ?usize,
-};
-
-fn sortToolResults(
-    arena: Allocator,
-    content: []const message.ToolContentPart,
-    call_order: []const []const u8,
-) Allocator.Error![]const message.ToolContentPart {
-    var sortable: std.ArrayList(SortableToolResult) = .empty;
-    defer sortable.deinit(arena);
-    for (content, 0..) |part, index| switch (part) {
-        .tool_result => |value| try sortable.append(arena, .{
-            .part = part,
-            .original_index = index,
-            .order = orderOf(call_order, value.tool_call_id),
-        }),
-        else => {},
-    };
-    std.mem.sort(SortableToolResult, sortable.items, {}, struct {
-        fn lessThan(_: void, a: SortableToolResult, b: SortableToolResult) bool {
-            if (a.order == null and b.order == null) return a.original_index < b.original_index;
-            if (a.order == null) return false;
-            if (b.order == null) return true;
-            if (a.order.? == b.order.?) return a.original_index < b.original_index;
-            return a.order.? < b.order.?;
-        }
-    }.lessThan);
-
-    const output = try arena.alloc(message.ToolContentPart, content.len);
-    var result_index: usize = 0;
-    for (content, output) |part, *destination| switch (part) {
-        .tool_result => {
-            destination.* = sortable.items[result_index].part;
-            result_index += 1;
-        },
-        else => destination.* = part,
-    };
-    return output;
-}
-
-fn orderOf(order: []const []const u8, id: []const u8) ?usize {
-    for (order, 0..) |value, index| if (std.mem.eql(u8, value, id)) return index;
-    return null;
-}
-
-fn generatedFileMessage(value: provider.GeneratedFile) message.FilePart {
-    return .{
-        .data = generatedFileData(value.data),
-        .media_type = value.media_type,
-        .provider_options = value.provider_metadata,
-    };
-}
-
-fn generatedReasoningFileMessage(value: provider.GeneratedReasoningFile) message.ReasoningFilePart {
-    return .{
-        .data = generatedFileData(value.data),
-        .media_type = value.media_type,
-        .provider_options = value.provider_metadata,
-    };
-}
-
-fn generatedFileData(value: provider.GeneratedFileData) message.FilePartData {
-    return switch (value) {
-        .data => |data| .{ .data = switch (data.data) {
-            .bytes => |bytes| .{ .bytes = bytes },
-            .base64 => |base64| .{ .base64 = base64 },
-        } },
-        // Upstream's generated-file wrapper treats string data as base64.
-        .url => |url| .{ .data = .{ .base64 = url.url } },
-    };
+    return response_message_builder.toResponseMessages(
+        state.arena,
+        state.options.tools,
+        input_content,
+    ) catch |err| return mapAnyError(state, err, "failed to convert response messages");
 }
 
 const ToolExecutionBatch = struct {
@@ -1848,31 +1717,45 @@ const StopConditionJob = struct {
     }
 };
 
-fn stopConditionMet(state: *CallState) provider.CallError!bool {
-    if (state.options.stop_when.len == 0) return state.steps.items.len == 1;
-    const jobs = try state.arena.alloc(StopConditionJob, state.options.stop_when.len);
+pub fn isStopConditionMet(
+    io: std.Io,
+    arena: Allocator,
+    stop_when: []const StopCondition,
+    steps: []const StepResult,
+) provider.CallError!bool {
+    if (stop_when.len == 0) return steps.len == 1;
+    const jobs = try arena.alloc(StopConditionJob, stop_when.len);
     var group: std.Io.Group = .init;
-    defer group.cancel(state.io);
+    defer group.cancel(io);
     var warned = false;
-    for (state.options.stop_when, jobs) |condition, *job| {
-        job.* = .{ .io = state.io, .condition = condition, .steps = state.steps.items };
-        group.concurrent(state.io, StopConditionJob.run, .{job}) catch |err| switch (err) {
+    for (stop_when, jobs) |condition, *job| {
+        job.* = .{ .io = io, .condition = condition, .steps = steps };
+        group.concurrent(io, StopConditionJob.run, .{job}) catch |err| switch (err) {
             error.ConcurrencyUnavailable => {
                 if (!warned) {
                     std.log.warn("stop-condition concurrency unavailable; falling back to async scheduling", .{});
                     warned = true;
                 }
-                group.async(state.io, StopConditionJob.run, .{job});
+                group.async(io, StopConditionJob.run, .{job});
             },
         };
     }
-    try group.await(state.io);
+    try group.await(io);
     var matched = false;
     for (jobs) |job| {
         if (job.err) |err| return err;
         if (job.matched) matched = true;
     }
     return matched;
+}
+
+fn stopConditionMet(state: *CallState) provider.CallError!bool {
+    return isStopConditionMet(
+        state.io,
+        state.arena,
+        state.options.stop_when,
+        state.steps.items,
+    );
 }
 
 const Aggregates = struct {
@@ -1943,7 +1826,7 @@ fn accumulatedResultMessages(state: *CallState, steps: []const StepResult) Alloc
     return result.toOwnedSlice(state.arena);
 }
 
-fn filterActiveTools(
+pub fn filterActiveTools(
     arena: Allocator,
     tools: tool_api.ToolSet,
     active: ?[]const []const u8,

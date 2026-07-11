@@ -407,6 +407,20 @@ pub fn elapsedMilliseconds(start: std.Io.Timestamp, finish: std.Io.Timestamp) f6
     return @as(f64, @floatFromInt(nanoseconds)) / @as(f64, std.time.ns_per_ms);
 }
 
+/// Shared natural-continuation predicate for `generateText` and `streamText`.
+/// Preliminary tool results are excluded by callers before supplying the
+/// output count.
+pub fn shouldContinue(
+    client_call_count: usize,
+    client_output_count: usize,
+    denied_approval_count: usize,
+    pending_deferred_count: usize,
+) bool {
+    return (client_call_count > 0 and
+        client_call_count == client_output_count + denied_approval_count) or
+        pending_deferred_count > 0;
+}
+
 /// Races an operation against a per-tool deadline. When true concurrency is
 /// unavailable, execution degrades inline and the timeout is not enforced.
 pub fn runWithTimeout(
