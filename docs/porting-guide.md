@@ -539,3 +539,14 @@ Track every deviation here; anything not listed is a bug.
    default-provider registration; `GatewayError` retry/error special-cases
    dropped.
 10. JS runtime user-agent suffixes (`runtime/node.js/…`) → `runtime/zig/…`.
+11. Realtime `SessionConfig.turnDetection: {…} | null` — JSON `null` collapses
+    to absent under the global null-as-absent wire rule; the explicit
+    `{type: "disabled"}` spelling is the canonical way to disable turn
+    detection (provider codecs, e.g. OpenAI's, map it back to wire `null`).
+12. ISO-8601 timestamps on the canonical wire: serialization always emits
+    millisecond-precision UTC (`…Z`, matching JS `Date.toJSON()`); parsing
+    accepts optional fractional seconds but requires the `Z` suffix — numeric
+    UTC offsets are rejected (upstream `new Date(...)` would accept them).
+13. On the canonical wire, binary payloads (`Uint8Array` positions) serialize
+    as base64 strings, matching gateway normalization; JSON octet arrays are
+    tolerated on parse.

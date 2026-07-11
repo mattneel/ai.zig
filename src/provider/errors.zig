@@ -64,13 +64,29 @@ pub const RetryReason = enum {
     abort,
 };
 
-pub const FinishReason = enum {
+/// Mirrors language-model-v4-finish-reason.ts unified values.
+pub const FinishReasonUnified = enum {
     stop,
     length,
     content_filter,
     tool_calls,
     @"error",
     other,
+
+    pub const wire_values = .{
+        .{ .stop, "stop" },
+        .{ .length, "length" },
+        .{ .content_filter, "content-filter" },
+        .{ .tool_calls, "tool-calls" },
+        .{ .@"error", "error" },
+        .{ .other, "other" },
+    };
+};
+
+/// Mirrors language-model-v4-finish-reason.ts.
+pub const FinishReason = struct {
+    unified: FinishReasonUnified,
+    raw: ?[]const u8 = null,
 };
 
 pub const TypeValidationContext = struct {
