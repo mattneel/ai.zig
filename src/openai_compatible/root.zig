@@ -1,4 +1,5 @@
-//! OpenAI-compatible Chat Completions provider template.
+//! OpenAI-compatible Chat Completions provider template, including presets
+//! for Groq, DeepSeek, Mistral, Together AI, and Fireworks.
 
 const std = @import("std");
 const provider = @import("provider");
@@ -11,6 +12,18 @@ pub const QueryParam = config.QueryParam;
 pub const ErrorHooks = config.ErrorHooks;
 pub const ChatLanguageModel = @import("chat_language_model.zig").ChatLanguageModel;
 pub const EmbeddingModel = @import("embedding_model.zig").EmbeddingModel;
+pub const vendors = @import("vendors.zig");
+pub const VendorPreset = vendors.VendorPreset;
+pub const VendorQuirks = vendors.VendorQuirks;
+pub const VendorSettings = vendors.VendorSettings;
+pub const VendorProvider = vendors.VendorProvider;
+pub const vendor_table = vendors.table;
+pub const createGroq = vendors.createGroq;
+pub const createDeepSeek = vendors.createDeepSeek;
+pub const createMistral = vendors.createMistral;
+pub const createTogetherAi = vendors.createTogetherAi;
+pub const createTogetherAI = vendors.createTogetherAI;
+pub const createFireworks = vendors.createFireworks;
 
 pub const OpenAiCompatible = struct {
     settings: Settings,
@@ -40,11 +53,14 @@ pub const OpenAiCompatible = struct {
                 .api_key = self.settings.api_key,
                 .api_key_env_var = self.settings.api_key_env_var,
                 .env = self.settings.env,
+                .default_headers = self.settings.default_headers,
                 .headers = self.settings.headers,
+                .user_agent_suffix = self.settings.user_agent_suffix,
                 .query_params = self.settings.query_params,
                 .transport = self.settings.transport,
                 .include_usage = self.settings.include_usage,
                 .supports_structured_outputs = self.settings.supports_structured_outputs,
+                .strict_json_schema_default = self.settings.strict_json_schema_default,
                 .error_hooks = self.settings.error_hooks,
             },
         };
@@ -81,11 +97,14 @@ pub const OpenAiCompatible = struct {
                 .api_key = self.settings.api_key,
                 .api_key_env_var = self.settings.api_key_env_var,
                 .env = self.settings.env,
+                .default_headers = self.settings.default_headers,
                 .headers = self.settings.headers,
+                .user_agent_suffix = self.settings.user_agent_suffix,
                 .query_params = self.settings.query_params,
                 .transport = self.settings.transport,
                 .include_usage = self.settings.include_usage,
                 .supports_structured_outputs = self.settings.supports_structured_outputs,
+                .strict_json_schema_default = self.settings.strict_json_schema_default,
                 .max_embeddings_per_call = self.settings.max_embeddings_per_call,
                 .supports_parallel_embedding_calls = self.settings.supports_parallel_embedding_calls,
                 .error_hooks = self.settings.error_hooks,

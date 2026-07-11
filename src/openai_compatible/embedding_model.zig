@@ -161,9 +161,14 @@ pub const EmbeddingModel = struct {
         if (call_headers) |source| for (source, call_entries) |header, *entry| {
             entry.* = .{ .name = header.name, .value = header.value };
         };
-        const lists = [_][]const provider_utils.HeaderEntry{ auth, resolved, call_entries };
+        const lists = [_][]const provider_utils.HeaderEntry{
+            auth,
+            self.config.default_headers,
+            resolved,
+            call_entries,
+        };
         const combined = try provider_utils.combineHeaders(arena, &lists);
-        return provider_utils.withUserAgentSuffix(arena, combined, &.{"ai-sdk-zig/openai-compatible/0.0.0"});
+        return provider_utils.withUserAgentSuffix(arena, combined, &.{self.config.user_agent_suffix});
     }
 };
 

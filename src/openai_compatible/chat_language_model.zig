@@ -185,12 +185,17 @@ pub const ChatLanguageModel = struct {
                 entry.* = .{ .name = header.name, .value = header.value };
             }
         }
-        const lists = [_][]const provider_utils.HeaderEntry{ auth, resolved, call_entries };
+        const lists = [_][]const provider_utils.HeaderEntry{
+            auth,
+            self.config.default_headers,
+            resolved,
+            call_entries,
+        };
         const combined = try provider_utils.combineHeaders(arena, &lists);
         return provider_utils.withUserAgentSuffix(
             arena,
             combined,
-            &.{"ai-sdk-zig/openai-compatible/0.0.0"},
+            &.{self.config.user_agent_suffix},
         );
     }
 };
@@ -223,6 +228,7 @@ fn buildArgs(
         arena,
         options.provider_options,
         self.config.provider_name,
+        self.config.strict_json_schema_default,
         &warnings,
         diag,
     );
@@ -301,11 +307,15 @@ fn parseCompatibleOptions(
     arena: Allocator,
     value: ?provider.ProviderOptions,
     raw_name: []const u8,
+    strict_json_schema_default: bool,
     warnings: *std.ArrayList(provider.Warning),
     diag: ?*provider.Diagnostics,
 ) BuildError!ParsedCompatibleOptions {
     const camel_name = try toCamelCase(arena, raw_name);
-    var result: ParsedCompatibleOptions = .{ .metadata_key = raw_name };
+    var result: ParsedCompatibleOptions = .{
+        .strict_json_schema = strict_json_schema_default,
+        .metadata_key = raw_name,
+    };
     const root = if (value) |options| switch (options) {
         .object => |object| object,
         .null => return result,
