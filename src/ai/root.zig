@@ -10,6 +10,9 @@ pub const logger = @import("logger.zig");
 pub const prompt = @import("prompt.zig");
 pub const middleware = @import("middleware.zig");
 pub const registry = @import("registry.zig");
+pub const generate_text_types = @import("generate_text_types.zig");
+pub const tool_approval_signature = @import("tool_approval_signature.zig");
+pub const generate_text = @import("generate_text.zig");
 
 pub const ModelMessage = message.ModelMessage;
 pub const Tool = tool.Tool;
@@ -30,6 +33,31 @@ pub const ProviderRegistry = registry.ProviderRegistry;
 pub const createProviderRegistry = registry.createProviderRegistry;
 pub const customProvider = registry.customProvider;
 pub const LanguageModelRef = registry.LanguageModelRef;
+pub const ContentPart = generate_text_types.ContentPart;
+pub const ReasoningOutput = generate_text_types.ReasoningOutput;
+pub const TypedToolCall = generate_text_types.TypedToolCall;
+pub const TypedToolResult = generate_text_types.TypedToolResult;
+pub const TypedToolError = generate_text_types.TypedToolError;
+pub const StepResult = generate_text_types.StepResult;
+pub const GenerateTextResult = generate_text_types.GenerateTextResult;
+pub const GenerateTextOptions = generate_text.GenerateTextOptions;
+pub const TimeoutConfiguration = generate_text.TimeoutConfiguration;
+pub const ToolTimeout = generate_text.ToolTimeout;
+pub const StopCondition = generate_text.StopCondition;
+pub const PrepareStep = generate_text.PrepareStep;
+pub const PrepareStepOptions = generate_text.PrepareStepOptions;
+pub const PrepareStepResult = generate_text.PrepareStepResult;
+pub const RepairToolCall = generate_text.RepairToolCall;
+pub const RepairToolCallOptions = generate_text.RepairToolCallOptions;
+pub const RefineToolInput = generate_text.RefineToolInput;
+pub const Output = generate_text.Output;
+pub const OutputValue = generate_text.OutputValue;
+pub const Callbacks = generate_text.Callbacks;
+pub const generateText = generate_text.generateText;
+pub const stepCount = generate_text.stepCount;
+pub const hasToolCall = generate_text.hasToolCall;
+pub const loopFinished = generate_text.loopFinished;
+pub const text = generate_text.text;
 pub const resolveLanguageModel = registry.resolveLanguageModel;
 pub const setDefaultProvider = registry.setDefaultProvider;
 pub const setDefaultEnv = registry.setDefaultEnv;
@@ -38,4 +66,5 @@ pub const useOpenRouterDefault = registry.useOpenRouterDefault;
 
 test "module declarations" {
     std.testing.refAllDecls(@This());
+    _ = @import("generate_text_test.zig");
 }

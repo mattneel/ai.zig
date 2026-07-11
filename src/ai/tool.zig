@@ -156,6 +156,7 @@ pub const Tool = struct {
     description: ?Description = null,
     input_schema: provider_utils.Schema,
     output_schema: ?provider_utils.Schema = null,
+    context_schema: ?provider_utils.Schema = null,
     execute: ?ToolExecute = null,
     needs_approval: NeedsApproval = .no,
     on_input_start: ?InputStartCallback = null,
@@ -178,8 +179,8 @@ pub const NamedTool = struct {
     tool: Tool,
 };
 
-/// Runtime ToolSet path. Comptime struct-of-tools sugar belongs with the
-/// generic generateText surface in Phase 4b.
+/// Runtime ToolSet path used by generateText. Comptime struct-of-tools sugar
+/// is intentionally deferred to a later generic convenience surface.
 pub const ToolSet = []const NamedTool;
 
 test "PreliminaryStream preserves pull order" {

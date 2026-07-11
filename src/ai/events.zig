@@ -1,12 +1,13 @@
 //! Stable telemetry event shapes for the AI core lifecycle.
 //!
-//! Phase 4b fills the opaque StepResult payload without changing dispatcher
-//! callback signatures or the rest of these event records.
+//! Phase 4b replaces the reserved opaque result slots with the concrete
+//! non-streaming text result types.
 
 const std = @import("std");
 const provider = @import("provider");
 const message = @import("message.zig");
 const tool = @import("tool.zig");
+const text_types = @import("generate_text_types.zig");
 
 pub const GenerateTextStartEvent = struct {
     call_id: []const u8,
@@ -45,7 +46,7 @@ pub const StepStartEvent = struct {
     tools: tool.ToolSet = &.{},
     step_tools: ?[]const provider.Tool = null,
     tool_choice: ?provider.ToolChoice = null,
-    previous_steps: []const *const anyopaque = &.{},
+    previous_steps: []const text_types.StepResult = &.{},
     provider_options: ?provider.ProviderOptions = null,
     output: ?std.json.Value = null,
     runtime_context: ?std.json.Value = null,
@@ -75,7 +76,7 @@ pub const LanguageModelCallEndEvent = struct {
     model_id: []const u8,
     finish_reason: provider.FinishReason,
     usage: provider.Usage,
-    content: []const provider.Content,
+    content: []const text_types.ContentPart,
     response_id: ?[]const u8 = null,
     performance: Performance,
 };
@@ -112,8 +113,7 @@ pub const ToolExecutionEndEvent = struct {
 pub const StepEndEvent = struct {
     call_id: []const u8,
     step_number: usize,
-    /// TODO(phase-4b): replace with `*const StepResult` once that type lands.
-    step_result: *const anyopaque,
+    step_result: *const text_types.StepResult,
 };
 
 pub const EndEvent = struct {
@@ -121,13 +121,13 @@ pub const EndEvent = struct {
     step_number: usize,
     model: provider.LanguageModel,
     text: []const u8,
-    content: []const provider.Content,
+    content: []const text_types.ContentPart,
     finish_reason: provider.FinishReason,
     usage: provider.Usage,
     warnings: []const provider.Warning,
     response_messages: []const message.ModelMessage = &.{},
-    steps: []const *const anyopaque = &.{},
-    final_step: ?*const anyopaque = null,
+    steps: []const text_types.StepResult = &.{},
+    final_step: ?*const text_types.StepResult = null,
     runtime_context: ?std.json.Value = null,
     tools_context: ?std.json.Value = null,
 };

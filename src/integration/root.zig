@@ -56,6 +56,38 @@ const ErrorShape = struct {
     @"error": struct { message: []const u8 },
 };
 
+const LoopWeatherTool = struct {
+    calls: usize = 0,
+    saw_city: bool = false,
+
+    fn execute(
+        raw: ?*anyopaque,
+        _: std.Io,
+        arena: std.mem.Allocator,
+        input: std.json.Value,
+        _: ai.tool.ToolExecutionOptions,
+    ) anyerror!ai.tool.ToolOutput {
+        const self: *@This() = @ptrCast(@alignCast(raw.?));
+        self.calls += 1;
+        self.saw_city = input == .object and input.object.get("city") != null;
+        var output: std.json.ObjectMap = .empty;
+        try output.put(arena, "condition", .{ .string = "sunny" });
+        try output.put(arena, "temperature", .{ .integer = 21 });
+        return .{ .value = .{ .object = output } };
+    }
+};
+
+fn loopWeatherTools(recorder: *LoopWeatherTool) [1]ai.NamedTool {
+    return .{.{
+        .name = "weather",
+        .tool = .{
+            .description = .{ .text = "Get the weather for a city" },
+            .input_schema = provider_utils.schemaFromType(struct { city: []const u8 }),
+            .execute = .{ .ctx = recorder, .execute_fn = LoopWeatherTool.execute },
+        },
+    }};
+}
+
 fn errorMessage(value: ErrorShape) []const u8 {
     return value.@"error".message;
 }
@@ -699,6 +731,105 @@ test "integration anthropic generate maps native content and thinking request sh
     try std.testing.expectEqualStrings("enabled", request_json.object.get("thinking").?.object.get("type").?.string);
 }
 
+test "integration generateText anthropic two-step tool round trip" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"msg-loop-1","type":"message","role":"assistant","model":"claude-haiku","content":[{"type":"tool_use","id":"toolu-weather-1","name":"weather","input":{"city":"Paris"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":3}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"msg-loop-2","type":"message","role":"assistant","model":"claude-haiku","content":[{"type":"text","text":"Paris is sunny and 21 C."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":9,"output_tokens":6}}
+        },
+    });
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-haiku", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var result = try ai.generateText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.loopFinished()},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", result.text());
+    try std.testing.expectEqual(14, result.usage().input_tokens.total.?);
+    try std.testing.expectEqual(9, result.usage().output_tokens.total.?);
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"type\":\"tool_result\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"tool_use_id\":\"toolu-weather-1\"") != null);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
+test "integration generateText openai-compatible two-step tool round trip" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"chat-loop-1","created":1700000000,"model":"vendor/model","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-weather-1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}
+        },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"chat-loop-2","created":1700000001,"model":"vendor/model","choices":[{"message":{"role":"assistant","content":"Paris is sunny and 21 C."},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":5}}
+        },
+    });
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = openai_compatible.createOpenAiCompatible(.{
+        .provider_name = "test-provider",
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.chatModel("vendor/model", null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var result = try ai.generateText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.loopFinished()},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqualStrings("Paris is sunny and 21 C.", result.text());
+    try std.testing.expectEqual(12, result.usage().input_tokens.total.?);
+    try std.testing.expectEqual(7, result.usage().output_tokens.total.?);
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"role\":\"tool\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, requests[1].body, "\"tool_call_id\":\"call-weather-1\"") != null);
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "anthropic request uses JSON-tool fallback and clamps temperature" {
     const allocator = std.testing.allocator;
     var client = provider_utils.HttpClientTransport.init(allocator, std.testing.io);
@@ -1185,5 +1316,60 @@ test "live Anthropic generate and stream smoke" {
     std.debug.print(
         "live Anthropic smoke: model={s} generate_text_bytes={d} stream_parts={d} text_deltas={d} streamed_text_bytes={d}\n",
         .{ model_id, generated_text_bytes, part_count, text_delta_count, streamed_text_bytes },
+    );
+}
+
+test "live Anthropic generateText two-step tool loop" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Anthropic tool loop skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "ANTHROPIC_API_KEY") orelse {
+        std.debug.print("live Anthropic tool loop skipped: API key absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = try anthropic.createAnthropic(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "claude-haiku-4-5-20251001";
+    var chat = try factory.messages(model_id, null);
+    var weather: LoopWeatherTool = .{};
+    const tools = loopWeatherTools(&weather);
+    var result = try ai.generateText(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .instructions = .{ .text = "Call the weather tool exactly once for the requested city. After the tool result, answer in one short sentence and do not call any more tools." },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.loopFinished()},
+        .max_output_tokens = 200,
+    });
+    defer result.deinit();
+
+    const total_tokens = (result.usage().input_tokens.total orelse 0) +
+        (result.usage().output_tokens.total orelse 0);
+    try std.testing.expectEqual(2, result.steps.len);
+    try std.testing.expectEqual(1, weather.calls);
+    try std.testing.expect(weather.saw_city);
+    try std.testing.expectEqual(1, result.toolCalls().len);
+    try std.testing.expect(result.text().len > 0);
+    try std.testing.expect(total_tokens > 0);
+    std.debug.print(
+        "live Anthropic tool loop: steps={d} tool_calls={d} executions={d} final_text_bytes={d} total_tokens={d}\n",
+        .{ result.steps.len, result.toolCalls().len, weather.calls, result.text().len, total_tokens },
     );
 }
