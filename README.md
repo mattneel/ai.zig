@@ -288,7 +288,7 @@ is the documentation.
 
 ## License
 
-Not yet finalized — resolving it is a tracked pre-release requirement
-(upstream is Apache-2.0; the vendored `inspiration/` tree retains its own
-license). Until then: all rights reserved; do not redistribute binaries.
-ai.zig is not affiliated with or endorsed by Vercel.
+[Apache-2.0](LICENSE), with attribution and provenance in [NOTICE](NOTICE).
+The vendored upstream tree under `inspiration/` retains its own Apache-2.0
+license (Copyright Vercel, Inc.). ai.zig is not affiliated with or endorsed
+by Vercel.

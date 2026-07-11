@@ -1,0 +1,14 @@
+ai.zig
+Copyright 2026 Matt Neel
+
+Licensed under the Apache License, Version 2.0.
+
+This product is an independent, parity-focused implementation of the
+Vercel AI SDK core for Zig. It is derived in design — provider wire
+protocols, behavioral contracts, type shapes, and test fixtures — from
+the Vercel AI SDK (https://github.com/vercel/ai),
+Copyright 2023 Vercel, Inc., licensed under the Apache License,
+Version 2.0. The upstream source is vendored unmodified under
+inspiration/ with its license intact.
+
+ai.zig is not affiliated with or endorsed by Vercel, Inc.
