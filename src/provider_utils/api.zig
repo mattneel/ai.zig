@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const provider = @import("provider");
 const transport_api = @import("http_transport.zig");
 const headers_api = @import("headers.zig");
+const multipart = @import("multipart.zig");
 const sse = @import("sse.zig");
 const package_version = @import("version.zig").value;
 
@@ -15,6 +16,12 @@ pub const PostJsonOptions = struct {
     url: []const u8,
     headers: []const provider.Header = &.{},
     body_json: []const u8,
+};
+
+pub const PostFormDataOptions = struct {
+    url: []const u8,
+    headers: []const provider.Header = &.{},
+    form_data: *const multipart.FormData,
 };
 
 pub const GetOptions = struct {
@@ -138,6 +145,38 @@ pub fn postJsonToApi(
         .headers = request_headers,
         .body = options.body_json,
     }, options.body_json, handlers, diag);
+}
+
+pub fn postFormDataToApi(
+    comptime T: type,
+    io: std.Io,
+    arena: Allocator,
+    transport: transport_api.HttpTransport,
+    options: PostFormDataOptions,
+    handlers: Handlers(T),
+    diag: ?*provider.Diagnostics,
+) ApiError!ApiResult(T) {
+    if (headers_api.getHeader(options.headers, "content-type") != null) {
+        provider.Diagnostics.set(diag, diagnosticAllocator(diag, arena), .{ .invalid_argument = .{
+            .message = "Content-Type is generated from the multipart boundary and must not be supplied by the caller.",
+            .parameter = "headers",
+        } });
+        return error.InvalidArgumentError;
+    }
+
+    const encoded = try options.form_data.encode(arena);
+    const request_values_json = try options.form_data.diagnosticJson(arena);
+    const base_headers = try arena.alloc(provider.Header, options.headers.len + 1);
+    base_headers[0] = .{ .name = "content-type", .value = encoded.content_type };
+    @memcpy(base_headers[1..], options.headers);
+    const request_headers = try appendSdkUserAgent(arena, base_headers);
+
+    return callApi(T, io, arena, transport, .{
+        .method = .POST,
+        .url = options.url,
+        .headers = request_headers,
+        .body = encoded.body,
+    }, request_values_json, handlers, diag);
 }
 
 pub fn getFromApi(
@@ -627,4 +666,118 @@ test "api handler constructors instantiate configurable and retry override paths
     );
     _ = binaryResponseHandler();
     _ = eventSourceResponseHandler(std.json.Value);
+}
+
+test "postFormDataToApi sends the generated content type and exact encoded body" {
+    const Fake = struct {
+        spec: ?transport_api.RequestSpec = null,
+        reader: std.Io.Reader,
+
+        fn request(
+            raw: *anyopaque,
+            _: std.Io,
+            _: Allocator,
+            spec: transport_api.RequestSpec,
+            _: ?*provider.Diagnostics,
+        ) transport_api.RequestError!transport_api.Response {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.spec = spec;
+            return .{
+                .status = 200,
+                .status_text = "OK",
+                .headers = &.{.{ .name = "content-type", .value = "application/json" }},
+                .body = .{
+                    .ctx = self,
+                    .reader_ptr = &self.reader,
+                    .deinit_fn = deinitBody,
+                },
+            };
+        }
+
+        fn deinitBody(_: *anyopaque, _: std.Io) void {}
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var form = try multipart.FormData.initFromSeed(arena, 9);
+    try form.appendText("model", "whisper-1");
+    var fake: Fake = .{ .reader = std.Io.Reader.fixed("{\"ok\":true}") };
+    const Shape = struct { ok: bool };
+
+    const result = try postFormDataToApi(
+        Shape,
+        std.testing.io,
+        arena,
+        .{ .ctx = &fake, .vtable = &.{ .request = Fake.request } },
+        .{
+            .url = "https://example.test/audio/transcriptions",
+            .headers = &.{.{ .name = "x-test", .value = "present" }},
+            .form_data = &form,
+        },
+        .{
+            .success = jsonResponseHandler(Shape),
+            .failure = statusCodeErrorResponseHandler(),
+        },
+        null,
+    );
+
+    try std.testing.expect(result.value.ok);
+    const sent = fake.spec.?;
+    try std.testing.expectEqual(.POST, sent.method);
+    try std.testing.expectEqualStrings(
+        try std.fmt.allocPrint(arena, "multipart/form-data; boundary={s}", .{form.boundary}),
+        headers_api.getHeader(sent.headers, "content-type").?,
+    );
+    try std.testing.expectEqualStrings("present", headers_api.getHeader(sent.headers, "x-test").?);
+    try std.testing.expectEqualStrings(
+        try std.fmt.allocPrint(
+            arena,
+            "--{s}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n--{s}--\r\n",
+            .{ form.boundary, form.boundary },
+        ),
+        sent.body.?,
+    );
+}
+
+test "postFormDataToApi rejects a caller content-type header" {
+    const Never = struct {
+        fn request(
+            _: *anyopaque,
+            _: std.Io,
+            _: Allocator,
+            _: transport_api.RequestSpec,
+            _: ?*provider.Diagnostics,
+        ) transport_api.RequestError!transport_api.Response {
+            return error.APICallError;
+        }
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var form = try multipart.FormData.initFromSeed(arena, 10);
+    var marker: u8 = 0;
+    var diagnostics = provider.Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
+    const Shape = struct { ok: bool };
+
+    try std.testing.expectError(error.InvalidArgumentError, postFormDataToApi(
+        Shape,
+        std.testing.io,
+        arena,
+        .{ .ctx = &marker, .vtable = &.{ .request = Never.request } },
+        .{
+            .url = "https://example.test/upload",
+            .headers = &.{.{ .name = "Content-Type", .value = "multipart/form-data" }},
+            .form_data = &form,
+        },
+        .{
+            .success = jsonResponseHandler(Shape),
+            .failure = statusCodeErrorResponseHandler(),
+        },
+        &diagnostics,
+    ));
+    try std.testing.expect(diagnostics.available);
+    try std.testing.expectEqualStrings("headers", diagnostics.payload.invalid_argument.parameter);
 }

@@ -115,6 +115,7 @@ pub const TranscriptionModel = transcription_model.TranscriptionModel;
 pub const TranscriptionCallOptions = transcription_model.CallOptions;
 pub const TranscriptionResult = transcription_model.Result;
 pub const TranscriptionSegment = transcription_model.Segment;
+pub const TranscriptionResponseInfo = transcription_model.ResponseInfo;
 pub const TranscriptionStreamOptions = transcription_model.StreamOptions;
 pub const TranscriptionStreamPart = transcription_model.StreamPart;
 pub const TranscriptionPartStream = transcription_model.PartStream;
@@ -133,6 +134,7 @@ pub const VideoFrameType = video_model.FrameType;
 pub const VideoFrameImage = video_model.FrameImage;
 pub const VideoData = video_model.VideoData;
 pub const VideoResult = video_model.Result;
+pub const VideoResponseInfo = video_model.ResponseInfo;
 
 pub const Files = files_module.Files;
 pub const UploadFileCallOptions = files_module.UploadFileCallOptions;

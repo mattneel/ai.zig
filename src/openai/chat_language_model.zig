@@ -874,6 +874,7 @@ fn testConfig(
     transport: provider_utils.HttpTransport,
 ) config_api.Config {
     return .{
+        .allocator = std.testing.allocator,
         .base_url = base_url,
         .api_key = "test-key",
         .organization = null,

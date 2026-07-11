@@ -60,6 +60,15 @@ pub fn build(b: *std.Build) void {
     ai.addImport("openrouter", openrouter);
     ai.addOptions("ai_build_options", ai_build_options);
 
+    const xai = b.addModule("xai", .{
+        .root_source_file = b.path("src/xai/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    xai.addImport("provider", provider);
+    xai.addImport("provider_utils", provider_utils);
+    xai.addImport("openai_compatible", openai_compatible);
+
     const anthropic = b.addModule("anthropic", .{
         .root_source_file = b.path("src/anthropic/root.zig"),
         .target = target,
@@ -147,6 +156,8 @@ pub fn build(b: *std.Build) void {
     });
     test_support.addImport("provider_utils", provider_utils);
     openai.addImport("test_support", test_support);
+    ai.addImport("test_support", test_support);
+    xai.addImport("test_support", test_support);
     ffi.addImport("test_support", test_support);
 
     const mcp_tests = b.createModule(.{
@@ -172,6 +183,7 @@ pub fn build(b: *std.Build) void {
     integration.addImport("anthropic", anthropic);
     integration.addImport("openai", openai);
     integration.addImport("openrouter", openrouter);
+    integration.addImport("xai", xai);
     integration.addImport("ai", ai);
     integration.addOptions("build_options", build_options);
 
@@ -181,6 +193,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ai", .test_step = "ai", .module = ai },
         .{ .name = "openai_compatible", .test_step = "openai-compatible", .module = openai_compatible },
         .{ .name = "openrouter", .test_step = "openrouter", .module = openrouter },
+        .{ .name = "xai", .test_step = "xai", .module = xai },
         .{ .name = "anthropic", .test_step = "anthropic", .module = anthropic },
         .{ .name = "openai", .test_step = "openai", .module = openai },
         .{ .name = "mcp", .test_step = "mcp", .module = mcp, .test_module = mcp_tests },

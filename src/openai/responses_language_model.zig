@@ -2000,6 +2000,7 @@ fn putString(object: *std.json.ObjectMap, arena: Allocator, key: []const u8, val
 
 fn testConfig(base_url: []const u8, transport: provider_utils.HttpTransport) config_api.Config {
     return .{
+        .allocator = std.testing.allocator,
         .base_url = base_url,
         .api_key = "test-key",
         .organization = null,

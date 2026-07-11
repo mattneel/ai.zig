@@ -1,4 +1,7 @@
+const std = @import("std");
 const provider_utils = @import("provider_utils");
+
+const Allocator = std.mem.Allocator;
 
 pub const HeaderSource = union(enum) {
     static: []const provider_utils.HeaderEntry,
@@ -18,6 +21,7 @@ pub const HeaderSource = union(enum) {
 };
 
 pub const Settings = struct {
+    allocator: Allocator,
     base_url: ?[]const u8 = null,
     api_key: ?[]const u8 = null,
     organization: ?[]const u8 = null,
@@ -29,6 +33,7 @@ pub const Settings = struct {
 };
 
 pub const Config = struct {
+    allocator: Allocator,
     base_url: []const u8,
     api_key: ?[]const u8,
     organization: ?[]const u8,

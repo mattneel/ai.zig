@@ -233,6 +233,64 @@ test "integration postJsonToApi 200 JSON records combined headers" {
     try std.testing.expectEqual(0, server.serveErrorCount());
 }
 
+test "integration postFormDataToApi records exact boundary header and wire body" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text = "{\"ok\":true}" },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const url = try makeUrl(arena, server, "/v1/form");
+    var form = try provider_utils.FormData.initFromSeed(arena, 0x10);
+    try form.appendText("model", "whisper-1");
+    try form.appendFile("file", "audio.mp3", "audio/mpeg", &.{ 0xff, 0xfb, 0x01 });
+    const Shape = struct { ok: bool };
+    const result = try api.postFormDataToApi(
+        Shape,
+        io,
+        arena,
+        client.transport(),
+        .{ .url = url, .form_data = &form },
+        .{
+            .success = api.jsonResponseHandler(Shape),
+            .failure = api.statusCodeErrorResponseHandler(),
+        },
+        null,
+    );
+    try std.testing.expect(result.value.ok);
+
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(1, requests.len);
+    try std.testing.expectEqualStrings(
+        try std.fmt.allocPrint(arena, "multipart/form-data; boundary={s}", .{form.boundary}),
+        recordedHeader(requests[0].headers, "content-type").?,
+    );
+    try std.testing.expectEqualStrings(
+        try std.fmt.allocPrint(
+            arena,
+            "--{s}\r\n" ++
+                "Content-Disposition: form-data; name=\"model\"\r\n\r\n" ++
+                "whisper-1\r\n" ++
+                "--{s}\r\n" ++
+                "Content-Disposition: form-data; name=\"file\"; filename=\"audio.mp3\"\r\n" ++
+                "Content-Type: audio/mpeg\r\n\r\n" ++
+                "\xff\xfb\x01\r\n" ++
+                "--{s}--\r\n",
+            .{ form.boundary, form.boundary, form.boundary },
+        ),
+        requests[0].body,
+    );
+    try std.testing.expectEqual(0, server.serveErrorCount());
+}
+
 test "integration postJsonToApi 429 JSON error populates retryable diagnostics" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -1721,6 +1779,7 @@ test "integration ToolLoopAgent drives native OpenAI Chat through a two-step too
     defer client.deinit();
     var base_buffer: [64]u8 = undefined;
     const factory = openai.createOpenAi(.{
+        .allocator = allocator,
         .base_url = server.baseUrl(&base_buffer),
         .api_key = "test-key",
         .transport = client.transport(),
@@ -1776,6 +1835,7 @@ test "integration ToolLoopAgent drives the default OpenAI Responses model throug
     defer client.deinit();
     var base_buffer: [64]u8 = undefined;
     var factory = openai.createOpenAi(.{
+        .allocator = allocator,
         .base_url = server.baseUrl(&base_buffer),
         .api_key = "test-key",
         .transport = client.transport(),
@@ -1829,6 +1889,7 @@ test "integration OpenAI Responses store=false round-trips encrypted reasoning t
     defer client.deinit();
     var base_buffer: [64]u8 = undefined;
     var factory = openai.createOpenAi(.{
+        .allocator = allocator,
         .base_url = server.baseUrl(&base_buffer),
         .api_key = "test-key",
         .transport = client.transport(),
@@ -2463,6 +2524,7 @@ test "live native OpenAI Chat generate and stream smoke" {
     var client = provider_utils.HttpClientTransport.init(allocator, io);
     defer client.deinit();
     const factory = openai.createOpenAi(.{
+        .allocator = allocator,
         .api_key = api_key,
         .transport = client.transport(),
     });
@@ -2529,6 +2591,66 @@ test "live native OpenAI Chat generate and stream smoke" {
     );
 }
 
+test "live Phase 10 OpenAI speech to transcription round trip" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Phase 10 OpenAI media round trip skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENAI_API_KEY") orelse {
+        std.debug.print("live Phase 10 OpenAI media round trip skipped: OPENAI_API_KEY is absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = openai.createOpenAi(.{
+        .allocator = allocator,
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const speech_model_id = "gpt-4o-mini-tts";
+    const transcription_model_id = "gpt-4o-mini-transcribe";
+    var speech_model = try factory.speechModel(speech_model_id, null);
+    var speech = try ai.generateSpeech(io, allocator, .{
+        .model = .{ .model = speech_model.speechModel() },
+        .text = "Phase ten media round trip.",
+        .voice = "alloy",
+        .output_format = "mp3",
+    });
+    defer speech.deinit();
+    const audio_bytes = try speech.audio.bytes(speech.arena_state.allocator());
+    try std.testing.expect(audio_bytes.len > 0);
+
+    var transcription_model = try factory.transcriptionModel(transcription_model_id, null);
+    var transcript = try ai.transcribe(io, allocator, .{
+        .model = .{ .model = transcription_model.transcriptionModel() },
+        .audio = .{ .data = .{ .bytes = audio_bytes } },
+    });
+    defer transcript.deinit();
+    try std.testing.expect(transcript.text.len > 0);
+    std.debug.print(
+        "live Phase 10 OpenAI media: speech_model={s} transcription_model={s} audio_bytes={d} transcript_bytes={d}\n",
+        .{ speech_model_id, transcription_model_id, audio_bytes.len, transcript.text.len },
+    );
+}
+
+test "live Phase 10 image and video generation skipped for cost" {
+    if (!build_options.live) return error.SkipZigTest;
+    std.debug.print("live Phase 10 image/video skipped: cost-gated\n", .{});
+    return error.SkipZigTest;
+}
+
 test "live native OpenAI Responses generate and stream smoke" {
     if (!build_options.live) return error.SkipZigTest;
 
@@ -2547,7 +2669,7 @@ test "live native OpenAI Responses generate and stream smoke" {
 
     var client = provider_utils.HttpClientTransport.init(allocator, io);
     defer client.deinit();
-    var factory = openai.createOpenAi(.{ .api_key = api_key, .transport = client.transport() });
+    var factory = openai.createOpenAi(.{ .allocator = allocator, .api_key = api_key, .transport = client.transport() });
     const model_id = "gpt-4o-mini";
     var responses = try factory.responses(model_id, null);
     const prompt = [_]provider.Message{.{ .user = .{ .content = &.{.{ .text = .{ .text = "Reply with exactly: hello" } }} } }};
@@ -2610,7 +2732,7 @@ test "live ToolLoopAgent executes one OpenAI Responses tool step" {
 
     var client = provider_utils.HttpClientTransport.init(allocator, io);
     defer client.deinit();
-    var factory = openai.createOpenAi(.{ .api_key = api_key, .transport = client.transport() });
+    var factory = openai.createOpenAi(.{ .allocator = allocator, .api_key = api_key, .transport = client.transport() });
     const model_id = "gpt-4o-mini";
     var responses = try factory.responses(model_id, null);
     var weather: LoopWeatherTool = .{};

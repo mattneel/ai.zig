@@ -21,6 +21,9 @@ pub const api = @import("api.zig");
 pub const ChatLanguageModel = @import("chat_language_model.zig").ChatLanguageModel;
 pub const ResponsesLanguageModel = @import("responses_language_model.zig").ResponsesLanguageModel;
 pub const EmbeddingModel = @import("embedding_model.zig").EmbeddingModel;
+pub const ImageModel = @import("image_model.zig").ImageModel;
+pub const SpeechModel = @import("speech_model.zig").SpeechModel;
+pub const TranscriptionModel = @import("transcription_model.zig").TranscriptionModel;
 
 const Allocator = std.mem.Allocator;
 
@@ -60,6 +63,30 @@ pub const OpenAi = struct {
         return EmbeddingModel.init(model_id, self.modelConfig(), diag);
     }
 
+    pub fn imageModel(
+        self: *const OpenAi,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!ImageModel {
+        return ImageModel.init(model_id, self.modelConfig(), diag);
+    }
+
+    pub fn speechModel(
+        self: *const OpenAi,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!SpeechModel {
+        return SpeechModel.init(model_id, self.modelConfig(), diag);
+    }
+
+    pub fn transcriptionModel(
+        self: *const OpenAi,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!TranscriptionModel {
+        return TranscriptionModel.init(model_id, self.modelConfig(), diag);
+    }
+
     /// Builds a Provider V4 adapter whose model objects live in `arena`.
     /// The adapter itself must remain at a stable address while its fat pointer
     /// is in use, matching every other provider context in this repository.
@@ -69,6 +96,7 @@ pub const OpenAi = struct {
 
     fn modelConfig(self: *const OpenAi) config.Config {
         return .{
+            .allocator = self.settings.allocator,
             .base_url = self.base_url,
             .api_key = self.settings.api_key,
             .organization = self.settings.organization,
@@ -94,6 +122,8 @@ pub const ProviderAdapter = struct {
         .languageModel = vLanguageModel,
         .embeddingModel = vEmbeddingModel,
         .imageModel = vImageModel,
+        .speechModel = vSpeechModel,
+        .transcriptionModel = vTranscriptionModel,
     };
 
     fn fromRaw(raw: *anyopaque) *ProviderAdapter {
@@ -123,16 +153,36 @@ pub const ProviderAdapter = struct {
     }
 
     fn vImageModel(
-        _: *anyopaque,
+        raw: *anyopaque,
         model_id: []const u8,
         diag: ?*provider.Diagnostics,
     ) provider.Error!provider.ImageModel {
-        if (diag) |diagnostics| provider.Diagnostics.set(diag, diagnostics.allocator, .{ .no_such_model = .{
-            .message = "OpenAI image models are deferred to a later phase",
-            .model_id = model_id,
-            .model_type = .image_model,
-        } });
-        return error.NoSuchModelError;
+        const self = fromRaw(raw);
+        const model = self.arena.create(ImageModel) catch return error.InvalidArgumentError;
+        model.* = try self.factory.imageModel(model_id, diag);
+        return model.imageModel();
+    }
+
+    fn vSpeechModel(
+        raw: *anyopaque,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!provider.SpeechModel {
+        const self = fromRaw(raw);
+        const model = self.arena.create(SpeechModel) catch return error.InvalidArgumentError;
+        model.* = try self.factory.speechModel(model_id, diag);
+        return model.speechModel();
+    }
+
+    fn vTranscriptionModel(
+        raw: *anyopaque,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!provider.TranscriptionModel {
+        const self = fromRaw(raw);
+        const model = self.arena.create(TranscriptionModel) catch return error.InvalidArgumentError;
+        model.* = try self.factory.transcriptionModel(model_id, diag);
+        return model.transcriptionModel();
     }
 };
 
@@ -169,6 +219,7 @@ test "OpenAI factory normalizes base URL, provider ids, namespaces, and Provider
         .vtable = &.{ .request = Dummy.request },
     };
     var factory = createOpenAi(.{
+        .allocator = std.testing.allocator,
         .base_url = "https://proxy.example/v1///",
         .name = "custom.openai",
         .transport = transport,
@@ -188,6 +239,9 @@ test "OpenAI factory normalizes base URL, provider ids, namespaces, and Provider
     const erased = adapter.asProvider();
     try std.testing.expectEqualStrings("custom.openai.responses", (try erased.languageModel("gpt-4o-mini", null)).provider());
     try std.testing.expectEqualStrings("custom.openai.embedding", (try erased.embeddingModel("text-embedding-3-small", null)).provider());
+    try std.testing.expectEqualStrings("custom.openai.image", (try erased.imageModel("gpt-image-1", null)).provider());
+    try std.testing.expectEqualStrings("custom.openai.speech", (try erased.speechModel("gpt-4o-mini-tts", null)).provider());
+    try std.testing.expectEqualStrings("custom.openai.transcription", (try erased.transcriptionModel("gpt-4o-mini-transcribe", null)).provider());
 }
 
 test "OpenAI factory reads the base URL at creation and the API key at call time" {
@@ -223,6 +277,7 @@ test "OpenAI factory reads the base URL at creation and the API key at call time
     var client = provider_utils.HttpClientTransport.init(allocator, io);
     defer client.deinit();
     const factory = createOpenAi(.{
+        .allocator = allocator,
         .env = .{ .ctx = &env_context, .get_fn = Env.get },
         .transport = client.transport(),
     });

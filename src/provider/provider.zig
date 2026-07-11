@@ -7,12 +7,13 @@ const image = @import("image_model.zig");
 const transcription = @import("transcription_model.zig");
 const speech = @import("speech_model.zig");
 const reranking = @import("reranking_model.zig");
+const video = @import("video_model.zig");
 const files_module = @import("files.zig");
 const skills_module = @import("skills.zig");
 const std = @import("std");
 
-/// Mirrors provider-v4.ts as a Zig fat-pointer registry. Upstream notably has
-/// no `videoModel` lookup despite defining VideoModelV4; that quirk is kept.
+/// Mirrors provider-v4.ts as a Zig fat-pointer registry. `videoModel` is an
+/// ai.zig extension required to host provider-side deferred-job polling.
 pub const Provider = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -49,6 +50,11 @@ pub const Provider = struct {
             model_id: []const u8,
             diag: ?*errors.Diagnostics,
         ) errors.Error!reranking.RerankingModel = null,
+        videoModel: ?*const fn (
+            ctx: *anyopaque,
+            model_id: []const u8,
+            diag: ?*errors.Diagnostics,
+        ) errors.Error!video.VideoModel = null,
         files: ?*const fn (
             ctx: *anyopaque,
             diag: ?*errors.Diagnostics,
@@ -110,6 +116,16 @@ pub const Provider = struct {
     ) errors.Error!reranking.RerankingModel {
         const function = self.vtable.rerankingModel orelse
             return noSuchModel(diag, model_id, .reranking_model);
+        return function(self.ctx, model_id, diag);
+    }
+
+    pub fn videoModel(
+        self: Provider,
+        model_id: []const u8,
+        diag: ?*errors.Diagnostics,
+    ) errors.Error!video.VideoModel {
+        const function = self.vtable.videoModel orelse
+            return noSuchModel(diag, model_id, .video_model);
         return function(self.ctx, model_id, diag);
     }
 

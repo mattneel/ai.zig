@@ -25,6 +25,10 @@ pub const getHeader = headers.getHeader;
 pub const base64 = @import("base64.zig");
 pub const decodeBase64 = base64.decode;
 pub const encodeBase64 = base64.encode;
+pub const multipart = @import("multipart.zig");
+pub const FormData = multipart.FormData;
+pub const MultipartFile = multipart.File;
+pub const EncodedFormData = multipart.Encoded;
 pub const json = @import("json.zig");
 pub const SafeParseResult = json.SafeParseResult;
 pub const SafeValidationResult = json.SafeValidationResult;
@@ -83,6 +87,7 @@ pub const BodyReader = http_transport.BodyReader;
 pub const api = @import("api.zig");
 pub const ApiError = api.ApiError;
 pub const PostJsonOptions = api.PostJsonOptions;
+pub const PostFormDataOptions = api.PostFormDataOptions;
 pub const GetOptions = api.GetOptions;
 pub const ApiResult = api.ApiResult;
 pub const HandlerResult = api.HandlerResult;
@@ -90,6 +95,7 @@ pub const ResponseHandler = api.ResponseHandler;
 pub const ErrorResponseHandler = api.ErrorResponseHandler;
 pub const Handlers = api.Handlers;
 pub const postJsonToApi = api.postJsonToApi;
+pub const postFormDataToApi = api.postFormDataToApi;
 pub const getFromApi = api.getFromApi;
 pub const jsonResponseHandler = api.jsonResponseHandler;
 pub const jsonErrorResponseHandler = api.jsonErrorResponseHandler;
@@ -112,6 +118,7 @@ comptime {
     _ = tool_call_tracker.StreamingToolCallTracker;
     _ = headers.combineHeaders;
     _ = base64.decode;
+    _ = multipart.FormData;
     _ = json.parseJson;
     _ = config.loadApiKey;
     _ = media_type.detectMediaType;
@@ -123,6 +130,7 @@ comptime {
     _ = retry_api.retry;
     _ = http_transport.HttpTransport;
     _ = api.postJsonToApi;
+    _ = api.postFormDataToApi;
     _ = download_api.download;
 }
 

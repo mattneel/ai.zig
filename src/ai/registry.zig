@@ -108,6 +108,19 @@ pub const ProviderRegistry = struct {
         };
     }
 
+    pub fn videoModel(
+        self: *ProviderRegistry,
+        id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!provider.VideoModel {
+        const split = try self.splitId(id, .video_model, diag);
+        const selected = try self.getProvider(split.provider_id, id, .video_model, diag);
+        return selected.videoModel(split.model_id, diag) catch |err| switch (err) {
+            error.NoSuchModelError => noSuchModel(self.arena, diag, id, .video_model, null),
+            else => |other| other,
+        };
+    }
+
     pub fn files(
         self: *ProviderRegistry,
         provider_id: []const u8,
@@ -166,6 +179,7 @@ pub const ProviderRegistry = struct {
         .transcriptionModel = vTranscriptionModel,
         .speechModel = vSpeechModel,
         .rerankingModel = vRerankingModel,
+        .videoModel = vVideoModel,
     };
 
     fn fromRaw(raw: *anyopaque) *ProviderRegistry {
@@ -191,6 +205,9 @@ pub const ProviderRegistry = struct {
     }
     fn vRerankingModel(raw: *anyopaque, id: []const u8, diag: ?*provider.Diagnostics) provider.Error!provider.RerankingModel {
         return fromRaw(raw).rerankingModel(id, diag);
+    }
+    fn vVideoModel(raw: *anyopaque, id: []const u8, diag: ?*provider.Diagnostics) provider.Error!provider.VideoModel {
+        return fromRaw(raw).videoModel(id, diag);
     }
 };
 
@@ -218,12 +235,33 @@ pub const RerankingModelRef = union(enum) {
     model: provider.RerankingModel,
 };
 
+pub const ImageModelRef = union(enum) {
+    id: []const u8,
+    model: provider.ImageModel,
+};
+
+pub const SpeechModelRef = union(enum) {
+    id: []const u8,
+    model: provider.SpeechModel,
+};
+
+pub const TranscriptionModelRef = union(enum) {
+    id: []const u8,
+    model: provider.TranscriptionModel,
+};
+
+pub const VideoModelRef = union(enum) {
+    id: []const u8,
+    model: provider.VideoModel,
+};
+
 pub const LanguageModelEntry = struct { id: []const u8, model: LanguageModelRef };
 pub const EmbeddingModelEntry = struct { id: []const u8, model: provider.EmbeddingModel };
 pub const ImageModelEntry = struct { id: []const u8, model: provider.ImageModel };
 pub const TranscriptionModelEntry = struct { id: []const u8, model: provider.TranscriptionModel };
 pub const SpeechModelEntry = struct { id: []const u8, model: provider.SpeechModel };
 pub const RerankingModelEntry = struct { id: []const u8, model: provider.RerankingModel };
+pub const VideoModelEntry = struct { id: []const u8, model: provider.VideoModel };
 
 pub const CustomProviderOptions = struct {
     language_models: []const LanguageModelEntry = &.{},
@@ -232,6 +270,7 @@ pub const CustomProviderOptions = struct {
     transcription_models: []const TranscriptionModelEntry = &.{},
     speech_models: []const SpeechModelEntry = &.{},
     reranking_models: []const RerankingModelEntry = &.{},
+    video_models: []const VideoModelEntry = &.{},
     files_api: ?provider.Files = null,
     skills_api: ?provider.Skills = null,
     fallback_provider: ?provider.Provider = null,
@@ -251,6 +290,7 @@ pub const CustomProvider = struct {
         .transcriptionModel = transcriptionModel,
         .speechModel = speechModel,
         .rerankingModel = rerankingModel,
+        .videoModel = videoModel,
         .files = files,
         .skills = skills,
     };
@@ -304,6 +344,13 @@ pub const CustomProvider = struct {
         for (self.options.reranking_models) |entry| if (std.mem.eql(u8, entry.id, id)) return entry.model;
         if (self.options.fallback_provider) |fallback| return fallback.rerankingModel(id, diag);
         return noSuchModelFromDiag(diag, id, .reranking_model);
+    }
+
+    fn videoModel(raw: *anyopaque, id: []const u8, diag: ?*provider.Diagnostics) provider.Error!provider.VideoModel {
+        const self = fromRaw(raw);
+        for (self.options.video_models) |entry| if (std.mem.eql(u8, entry.id, id)) return entry.model;
+        if (self.options.fallback_provider) |fallback| return fallback.videoModel(id, diag);
+        return noSuchModelFromDiag(diag, id, .video_model);
     }
 
     fn files(raw: *anyopaque, diag: ?*provider.Diagnostics) provider.Error!provider.Files {
@@ -502,6 +549,75 @@ pub fn resolveRerankingModel(
                 break :blk noDefaultModel(diag, id, .reranking_model);
             break :blk selected.rerankingModel(id, diag);
         },
+    };
+}
+
+pub fn resolveImageModel(
+    model: ImageModelRef,
+    diag: ?*provider.Diagnostics,
+) provider.Error!provider.ImageModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| resolveDefaultModel(provider.ImageModel, id, .image_model, diag, "imageModel"),
+    };
+}
+
+pub fn resolveSpeechModel(
+    model: SpeechModelRef,
+    diag: ?*provider.Diagnostics,
+) provider.Error!provider.SpeechModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| resolveDefaultModel(provider.SpeechModel, id, .speech_model, diag, "speechModel"),
+    };
+}
+
+pub fn resolveTranscriptionModel(
+    model: TranscriptionModelRef,
+    diag: ?*provider.Diagnostics,
+) provider.Error!provider.TranscriptionModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| resolveDefaultModel(provider.TranscriptionModel, id, .transcription_model, diag, "transcriptionModel"),
+    };
+}
+
+pub fn resolveVideoModel(
+    model: VideoModelRef,
+    diag: ?*provider.Diagnostics,
+) provider.Error!provider.VideoModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| resolveDefaultModel(provider.VideoModel, id, .video_model, diag, "videoModel"),
+    };
+}
+
+fn resolveDefaultModel(
+    comptime T: type,
+    id: []const u8,
+    model_type: provider.ModelType,
+    diag: ?*provider.Diagnostics,
+    comptime method_name: []const u8,
+) provider.Error!T {
+    lockDefault();
+    const selected = default_state.provider_value orelse {
+        default_mutex.unlock();
+        return noDefaultModel(diag, id, model_type);
+    };
+    default_mutex.unlock();
+    const resolved: provider.Error!T = if (comptime T == provider.ImageModel)
+        selected.imageModel(id, diag)
+    else if (comptime T == provider.SpeechModel)
+        selected.speechModel(id, diag)
+    else if (comptime T == provider.TranscriptionModel)
+        selected.transcriptionModel(id, diag)
+    else if (comptime T == provider.VideoModel)
+        selected.videoModel(id, diag)
+    else
+        @compileError("unsupported default media model type for " ++ method_name);
+    return resolved catch |err| switch (err) {
+        error.NoSuchModelError => noSuchModelFromDiag(diag, id, model_type),
+        else => |other| other,
     };
 }
 
@@ -729,6 +845,7 @@ const TestLanguageModel = struct {
 const TestProvider = struct {
     model: *TestLanguageModel,
     last_id: ?[]const u8 = null,
+    clear_default_on_image: bool = false,
 
     fn asProvider(self: *TestProvider) provider.Provider {
         return .{ .ctx = self, .vtable = &vtable };
@@ -751,7 +868,8 @@ const TestProvider = struct {
     fn embeddingModel(_: *anyopaque, _: []const u8, _: ?*provider.Diagnostics) provider.Error!provider.EmbeddingModel {
         return error.NoSuchModelError;
     }
-    fn imageModel(_: *anyopaque, _: []const u8, _: ?*provider.Diagnostics) provider.Error!provider.ImageModel {
+    fn imageModel(raw: *anyopaque, _: []const u8, _: ?*provider.Diagnostics) provider.Error!provider.ImageModel {
+        if (fromRaw(raw).clear_default_on_image) clearDefaultProviderState();
         return error.NoSuchModelError;
     }
 };
@@ -825,6 +943,52 @@ test "resolveLanguageModel uses a registered default provider" {
     const resolved = try resolveLanguageModel(.{ .id = "alias" }, null);
     try std.testing.expectEqualStrings("registered", resolved.provider());
     try std.testing.expectEqualStrings("alias", fake_provider.last_id.?);
+}
+
+test "media model resolver invokes provider callbacks after releasing the default lock" {
+    clearDefaultProviderState();
+    defer clearDefaultProviderState();
+    var model: TestLanguageModel = .{ .provider_name = "registered", .model_id = "resolved" };
+    var fake_provider: TestProvider = .{
+        .model = &model,
+        .clear_default_on_image = true,
+    };
+    setDefaultProvider(fake_provider.asProvider());
+    try std.testing.expectError(
+        error.NoSuchModelError,
+        resolveImageModel(.{ .id = "reentrant" }, null),
+    );
+}
+
+test "media model resolvers report the exact missing model type" {
+    clearDefaultProviderState();
+    defer clearDefaultProviderState();
+    var model: TestLanguageModel = .{ .provider_name = "registered", .model_id = "resolved" };
+    var fake_provider: TestProvider = .{ .model = &model };
+    setDefaultProvider(fake_provider.asProvider());
+    var diagnostics = provider.Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
+
+    try std.testing.expectError(
+        error.NoSuchModelError,
+        resolveImageModel(.{ .id = "missing-image" }, &diagnostics),
+    );
+    try std.testing.expectEqual(provider.ModelType.image_model, diagnostics.payload.no_such_model.model_type);
+    try std.testing.expectError(
+        error.NoSuchModelError,
+        resolveSpeechModel(.{ .id = "missing-speech" }, &diagnostics),
+    );
+    try std.testing.expectEqual(provider.ModelType.speech_model, diagnostics.payload.no_such_model.model_type);
+    try std.testing.expectError(
+        error.NoSuchModelError,
+        resolveTranscriptionModel(.{ .id = "missing-transcription" }, &diagnostics),
+    );
+    try std.testing.expectEqual(provider.ModelType.transcription_model, diagnostics.payload.no_such_model.model_type);
+    try std.testing.expectError(
+        error.NoSuchModelError,
+        resolveVideoModel(.{ .id = "missing-video" }, &diagnostics),
+    );
+    try std.testing.expectEqual(provider.ModelType.video_model, diagnostics.payload.no_such_model.model_type);
 }
 
 test "built-in OpenRouter default constructs from installed env and missing env has key hint" {

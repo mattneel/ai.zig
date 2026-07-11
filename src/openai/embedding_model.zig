@@ -310,6 +310,7 @@ test "OpenAI embeddings round-trip float and base64 encodings with native limits
     defer client.deinit();
     var base_buffer: [64]u8 = undefined;
     var model = try EmbeddingModel.init("text-embedding-3-large", .{
+        .allocator = allocator,
         .base_url = server.baseUrl(&base_buffer),
         .api_key = "test-key",
         .organization = "org-1",
