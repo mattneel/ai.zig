@@ -10,6 +10,9 @@ pub const Options = struct {
     max_size: usize = 2 * 1024 * 1024 * 1024,
     max_redirects: u16 = 10,
     headers: []const provider.Header = &.{},
+    /// Explicit test/development escape hatch. Production defaults continue
+    /// to reject loopback/private-network targets to prevent SSRF.
+    allow_private_networks: bool = false,
 };
 
 pub const Result = struct {
@@ -18,6 +21,10 @@ pub const Result = struct {
 };
 
 pub fn validateDownloadUrl(url: []const u8) error{DownloadError}!void {
+    return validateDownloadUrlInternal(url, false);
+}
+
+fn validateDownloadUrlInternal(url: []const u8, allow_private_networks: bool) error{DownloadError}!void {
     const uri = std.Uri.parse(url) catch return error.DownloadError;
     if (std.ascii.eqlIgnoreCase(uri.scheme, "data")) return;
     if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and
@@ -30,6 +37,7 @@ pub fn validateDownloadUrl(url: []const u8) error{DownloadError}!void {
     var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
     var host = host_component.toRaw(&host_buffer) catch return error.DownloadError;
     if (host.len == 0) return error.DownloadError;
+    if (allow_private_networks) return;
 
     if (host[0] == '[') {
         if (host.len < 2 or host[host.len - 1] != ']') return error.DownloadError;
@@ -63,7 +71,7 @@ pub fn download(
     options: Options,
     diag: ?*provider.Diagnostics,
 ) transport_api.RequestError!Result {
-    try validateWithDiagnostics(arena, url, diag);
+    try validateWithDiagnostics(arena, url, options.allow_private_networks, diag);
     if (std.ascii.startsWithIgnoreCase(url, "data:")) {
         return decodeDataUrl(arena, url, options.max_size, diag);
     }
@@ -76,7 +84,7 @@ pub fn download(
     var current_url: []const u8 = try arena.dupe(u8, url);
     var redirect_count: u16 = 0;
     while (redirect_count <= options.max_redirects) : (redirect_count += 1) {
-        try validateWithDiagnostics(arena, current_url, diag);
+        try validateWithDiagnostics(arena, current_url, options.allow_private_networks, diag);
         var response = try transport.request(io, arena, .{
             .method = .GET,
             .url = current_url,
@@ -244,9 +252,10 @@ fn resolveRedirect(
 fn validateWithDiagnostics(
     arena: Allocator,
     url: []const u8,
+    allow_private_networks: bool,
     diag: ?*provider.Diagnostics,
 ) transport_api.RequestError!void {
-    validateDownloadUrl(url) catch {
+    validateDownloadUrlInternal(url, allow_private_networks) catch {
         provider.Diagnostics.set(diag, diagnosticAllocator(diag, arena), .{ .download = .{
             .message = "URL is not allowed for download",
             .url = url,

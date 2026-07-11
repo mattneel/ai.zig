@@ -9,8 +9,16 @@ pub fn build(b: *std.Build) void {
         "Run tests whose names contain any of these substrings",
     ) orelse &.{};
     const live = b.option(bool, "live", "Run live provider smoke tests") orelse false;
+    const default_openrouter = b.option(
+        bool,
+        "default-openrouter",
+        "Compile the OpenRouter-backed default language-model resolver",
+    ) orelse true;
     const build_options = b.addOptions();
     build_options.addOption(bool, "live", live);
+    build_options.addOption(bool, "default_openrouter", default_openrouter);
+    const ai_build_options = b.addOptions();
+    ai_build_options.addOption(bool, "default_openrouter", default_openrouter);
 
     const provider = b.addModule("provider", .{
         .root_source_file = b.path("src/provider/root.zig"),
@@ -49,6 +57,8 @@ pub fn build(b: *std.Build) void {
     openrouter.addImport("provider", provider);
     openrouter.addImport("provider_utils", provider_utils);
     openrouter.addImport("openai_compatible", openai_compatible);
+    ai.addImport("openrouter", openrouter);
+    ai.addOptions("ai_build_options", ai_build_options);
 
     const anthropic = b.addModule("anthropic", .{
         .root_source_file = b.path("src/anthropic/root.zig"),
@@ -101,6 +111,7 @@ pub fn build(b: *std.Build) void {
     integration.addImport("openai_compatible", openai_compatible);
     integration.addImport("anthropic", anthropic);
     integration.addImport("openrouter", openrouter);
+    integration.addImport("ai", ai);
     integration.addOptions("build_options", build_options);
 
     const modules = [_]Module{

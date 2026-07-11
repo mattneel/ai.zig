@@ -560,3 +560,8 @@ Track every deviation here; anything not listed is a bug.
     `StreamingToolCallTracker` rejects them (`InvalidResponseDataError`).
     Rationale: several openai-compatible vendors omit ids, and upstream's own
     non-streaming path already falls back to `generateId()`.
+16. Deprecated upstream aliases are not ported (`system`→`instructions`,
+    `onFinish`→`onEnd`, `onStepFinish`→`onStepEnd`, `experimental_*` names,
+    the telemetry dispatcher's onStepEnd→onStepFinish fan-out, deprecated
+    tool-output content variants beyond what conversion warnings require).
+    A fresh SDK has no legacy consumers; only canonical names exist.

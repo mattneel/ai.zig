@@ -5,6 +5,7 @@ const test_support = @import("test_support");
 const openai_compatible = @import("openai_compatible");
 const anthropic = @import("anthropic");
 const openrouter = @import("openrouter");
+const ai = @import("ai");
 const build_options = @import("build_options");
 
 const api = provider_utils.api;
@@ -57,6 +58,88 @@ const ErrorShape = struct {
 
 fn errorMessage(value: ErrorShape) []const u8 {
     return value.@"error".message;
+}
+
+test "integration ai prompt downloads unsupported URL file and sniffs media type" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    const png = [_]u8{ 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1 };
+    try server.enqueue(.{
+        .content_type = "application/octet-stream",
+        .body = .{ .text = &png },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const url = try makeUrl(arena, server, "/asset/image");
+
+    const FakeModel = struct {
+        fn providerName(_: *anyopaque) []const u8 {
+            return "fake";
+        }
+        fn modelId(_: *anyopaque) []const u8 {
+            return "download-test";
+        }
+        fn supported(_: *anyopaque, _: []const u8, _: []const u8) bool {
+            return false;
+        }
+        fn generate(
+            _: *anyopaque,
+            _: std.Io,
+            _: std.mem.Allocator,
+            _: *const provider.CallOptions,
+            _: ?*provider.Diagnostics,
+        ) provider.CallError!provider.GenerateResult {
+            return error.UnsupportedFunctionalityError;
+        }
+        fn stream(
+            _: *anyopaque,
+            _: std.Io,
+            _: std.mem.Allocator,
+            _: *const provider.CallOptions,
+            _: ?*provider.Diagnostics,
+        ) provider.CallError!provider.StreamResult {
+            return error.UnsupportedFunctionalityError;
+        }
+    };
+    var marker: u8 = 0;
+    const model: provider.LanguageModel = .{ .ctx = &marker, .vtable = &.{
+        .provider = FakeModel.providerName,
+        .modelId = FakeModel.modelId,
+        .urlIsSupported = FakeModel.supported,
+        .doGenerate = FakeModel.generate,
+        .doStream = FakeModel.stream,
+    } };
+    const parts = [_]ai.message.UserContentPart{.{ .file = .{
+        .data = .{ .url = url },
+        .media_type = "image",
+    } }};
+    const messages = [_]ai.ModelMessage{.{ .user = .{
+        .content = .{ .parts = &parts },
+    } }};
+    const converted = try ai.convertToLanguageModelPrompt(
+        io,
+        allocator,
+        arena,
+        .{
+            .prompt = .{ .instructions = null, .messages = &messages },
+            .model = model,
+            .transport = client.transport(),
+            .download_options = .{ .allow_private_networks = true },
+        },
+        null,
+    );
+    const file = converted[0].user.content[0].file;
+    try std.testing.expectEqualStrings("image/png", file.media_type);
+    try std.testing.expectEqualSlices(u8, &png, file.data.data.data.bytes);
+    try std.testing.expectEqual(1, server.recordedRequests().len);
+    try std.testing.expectEqual(.GET, server.recordedRequests()[0].method);
+    try std.testing.expectEqual(0, server.serveErrorCount());
 }
 
 test "integration postJsonToApi 200 JSON records combined headers" {
