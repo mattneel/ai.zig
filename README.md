@@ -5,10 +5,10 @@
 ai.zig is an **independent, parity-focused Zig 0.16 implementation of the
 [Vercel AI SDK](https://github.com/vercel/ai) v7 core**, built on `std.Io`.
 It provides `generateText`, `streamText`, multi-step tool execution,
-structured output, embeddings, reranking, reusable agents, chat-UI
-streaming, and an MCP client across Anthropic, OpenAI, OpenAI-compatible
-providers, and OpenRouter — usable directly from Zig or through its C ABI
-and Python bindings.
+structured output, embeddings, reranking, reusable agents, UI message
+streams with a framework-agnostic Chat client, and an MCP client across the
+supported providers listed below — usable directly from Zig or through its
+C ABI and Python bindings.
 
 > ai.zig is an independent project and is **not affiliated with or endorsed
 > by Vercel**. The upstream SDK is vendored read-only under `inspiration/`
@@ -20,27 +20,36 @@ and Python bindings.
 | --- | --- | --- | --- | --- |
 | Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes |
 | Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes |
-| Structured output (Output strategies) | beta | Anthropic (haiku) | — | — |
+| Structured output (Output strategies) | beta | Claude Haiku 4.5 | — | — |
 | Embeddings / reranking | beta | — (canned fixtures) | — | — |
 | Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | — | — |
 | UI message stream + Chat client | beta | — (canned + in-process e2e) | — | — |
-| MCP client (stdio / SSE / streamable HTTP) | beta | real stdio child process | — | — |
-| Media (image / speech / transcribe / video) | beta | OpenAI speech→transcribe round trip | — | — |
+| MCP client (stdio / SSE / streamable HTTP) | beta | stdio live (child process); SSE + streamable HTTP via canned fixtures | — | — |
+| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | — | — |
 | Providers: anthropic, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream | via generate/stream |
-| **C ABI + Python bindings** | **preview** (pending ABI v1) | Anthropic | — | — |
 | Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — |
 | Rust bindings | planned | — | — | — |
 
-*Table dated 2026-07-11; live rows name the endpoints actually exercised by
-the `-Dlive` gate that session. The full suite is run at every phase gate;
-see [docs/roadmap.md](docs/roadmap.md) for per-phase acceptance and
-[docs/contracts.md](docs/contracts.md) for the behavioral contracts and
-known sharp edges.*
+*Last verified: 2026-07-11. The "Live-tested against" column reports the
+endpoints exercised by that successful `-Dlive` gate; other cells state the
+non-live coverage. The full suite runs at every phase gate; see
+[docs/roadmap.md](docs/roadmap.md) for per-phase acceptance and
+[docs/contracts.md](docs/contracts.md) for behavioral contracts and known
+sharp edges.*
 
-**The C ABI is a tested preview, not yet a stability promise.** A
-translate-c test locks the header against the current tree; cross-release
-compatibility (ABI versioning, tag-value stability, old-client-new-library
-tests) is the ABI v1 work tracked in the roadmap.
+**Stability vocabulary:** `beta` means implemented and covered by the full
+test suite, but the Zig API may still change. `preview` means narrower
+coverage and no compatibility guarantee.
+
+The **C ABI and Python bindings are preview surfaces pending ABI v1.** A
+`yes` in their table columns means the feature is currently exposed through
+them; it does not imply cross-release ABI stability. A translate-c test
+locks the header against the current tree; cross-release compatibility (ABI
+versioning, tag-value stability, old-client-against-new-library tests) is
+the ABI v1 work tracked in the roadmap.
+
+Built and tested on Linux (x86_64). macOS and Windows are expected to work
+given the stdlib foundations but are not yet exercised in CI.
 
 ## Installing
 
@@ -64,12 +73,14 @@ exe_mod.addImport("provider_utils", ai_dep.module("provider_utils"));
 
 Modules exposed: `ai`, `provider`, `provider_utils`, `anthropic`, `openai`,
 `openai_compatible`, `openrouter`, `xai`, `mcp`. For C/Python:
-`zig build ffi` produces `zig-out/lib/libai.{a,so*}` + `zig-out/include/ai.h`.
+`zig build ffi` produces the platform-appropriate static/shared library
+under `zig-out/lib/` and installs `zig-out/include/ai.h`.
 
 ## Using it (Zig)
 
-A two-step agentic call — the model asks for a tool, ai.zig runs it and
-feeds the result back, the model answers:
+A tool-enabled call that can complete in two model steps — the model
+requests the tool, ai.zig executes it, and the model incorporates the
+result:
 
 ```zig
 const std = @import("std");
@@ -120,7 +131,8 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, api_key: []const u8) !void {
     });
     defer result.deinit();
 
-    std.debug.print("{s}\n", .{result.text()}); // steps, usage, resolved model per step
+    std.debug.print("{s}\n", .{result.text()});
+    // The result also exposes steps, usage, messages, and resolved model metadata.
 }
 ```
 
@@ -175,36 +187,45 @@ Bare string model ids like `"anthropic/claude-…"` resolve through a
 requests, credentials, and billing go to OpenRouter, not to the named
 vendor.
 
-There is no silent path to that behavior: ai.zig never reads ambient
-environment variables, so bare ids **fail with an explanatory
-`LoadAPIKeyError`** until your application explicitly opts in via
-`ai.setDefaultRuntime(gpa, io)` + `ai.setDefaultEnv(...)` (supplying
-`OPENROUTER_API_KEY`) or installs its own default with
-`ai.setDefaultProvider(...)`. The built-in OpenRouter default can be
-compiled out entirely with `-Ddefault-openrouter=false`. To pin the request
-path, construct providers explicitly (as in the examples above) — every
-step result carries the resolved provider and model id.
+ai.zig does not inspect the process environment implicitly. Bare ids
+**fail with an explanatory `LoadAPIKeyError`** until the application
+explicitly configures a default provider — either by installing an
+application-provided key/value map (`ai.setDefaultRuntime(gpa, io)` +
+`ai.setDefaultEnv(...)` with an `OPENROUTER_API_KEY` entry) or by
+installing a custom default with `ai.setDefaultProvider(...)`. The built-in
+OpenRouter path can be compiled out entirely with
+`-Ddefault-openrouter=false`.
+
+**No request is routed through OpenRouter merely because a bare model id
+was used** (covered by a test: a bare id with no configured default
+returns `LoadAPIKeyError`, not a request). To pin the request path,
+construct providers explicitly, as in the examples above — every step
+result carries the resolved provider and model id.
 
 ## What "parity" means here
 
 Not "1:1". ai.zig targets the upstream **v7 core** at these levels:
 
-1. **Provider wire parity** — request bodies, response mapping, stream-part
-   sequences, and error taxonomies match upstream, fixture-tested (many
-   fixtures copied verbatim from upstream test suites).
+1. **Provider wire parity** — for supported provider/surface combinations,
+   request bodies, response mapping, stream-part sequences, and error
+   taxonomies match upstream except for deviations recorded in the fidelity
+   ledger. This is fixture-tested, including fixtures derived from the
+   upstream suites.
 2. **Core behavioral parity** — tool loops, stop conditions, prepareStep,
-   output strategies, retry policy, abort semantics: the upstream test
-   contracts are ported as Zig tests.
-3. **Conceptual API parity** — the upstream mental model with canonical
-   names only (deprecated aliases are not carried).
+   output strategies, retry policy, abort semantics: the relevant upstream
+   fixtures and behavioral contracts are ported as Zig tests.
+3. **Conceptual API parity** — the upstream v7 mental model and canonical
+   names are primary. Selected deprecated compatibility APIs
+   (`generateObject` and `streamObject`) are retained where they materially
+   ease migration and are clearly marked as deprecated.
 4. **Intentional Zig adaptations** — allocators/arenas, error unions +
    diagnostics, pull-based streams over `std.Io`, explicit cancellation.
    Every deviation is itemized with rationale in the
-   [fidelity ledger](docs/porting-guide.md) (§18, 16 entries).
-5. **Unsupported surfaces** — see the status table; notably Vercel-Gateway
-   routing (replaced by opt-in OpenRouter), realtime (planned), and the
-   framework UI bindings (React/Vue/etc. are out of scope; the
-   framework-agnostic Chat core they wrap *is* ported).
+   [fidelity ledger](docs/porting-guide.md) (§18).
+5. **Unsupported surfaces** — see the status table; notably Vercel AI
+   Gateway routing (replaced by opt-in OpenRouter) and the framework UI
+   bindings (React/Vue/etc. are out of scope; the framework-agnostic Chat
+   core they wrap *is* ported).
 
 ## Why Zig 0.16
 
@@ -215,8 +236,9 @@ with suspend-based backpressure — a natural analog of the SDK's
 `ReadableStream` pipelines. `std.http.Client`, TLS 1.2/1.3, and `std.json`
 are stdlib-provided and `Io`-integrated. Code written against `std.Io`
 today (threaded backend) is positioned to use future evented/io_uring
-backends with little or no public API change. Streaming, concurrency,
-cancellation, and the network layer are ported in full — a blocking-only
+backends with little or no public API change. For the implemented
+HTTP- and WebSocket-based surfaces, streaming, concurrency, cancellation,
+and networking are native rather than blocking-only shims — a blocking-only
 port would have been a failed port.
 
 Cancellation is layered, and the layers differ (see
@@ -260,7 +282,7 @@ comes from `build.zig.zon` (**0.16.0**).
 | `zig build test-ai` / `test-provider` / `test-mcp` / … | one module |
 | `zig build test -Dtest-filter=sse` | filter by test-name substring |
 | `zig build test-integration -Dlive` | live API smokes (explicit keys required) |
-| `zig build ffi` | build `libai` + install `include/ai.h` |
+| `zig build ffi` | build the static/shared library + install `include/ai.h` |
 | `python3 -m pytest bindings/python` | Python binding suite |
 
 Contributor ground rules (humans and agents): [`AGENTS.md`](AGENTS.md).
