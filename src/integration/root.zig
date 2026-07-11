@@ -1464,6 +1464,299 @@ test "integration openai-compatible early error frame becomes error part then fi
     );
 }
 
+test "integration generateObject uses OpenAI json_schema response format" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"object-1","created":1700000000,"model":"vendor/object","choices":[{"message":{"role":"assistant","content":"{\"name\":\"Ada\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = openai_compatible.createOpenAiCompatible(.{
+        .provider_name = "test-provider",
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+        .supports_structured_outputs = true,
+    });
+    var chat = try factory.chatModel("vendor/object", null);
+    const Shape = struct { name: []const u8 };
+    var result = try ai.generateObject(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "Return a name." },
+        .schema = provider_utils.schemaFromType(Shape),
+        .schema_name = "person",
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Ada", result.object.object.get("name").?.string);
+
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(1, requests.len);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const request = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), requests[0].body, .{});
+    const response_format = request.object.get("response_format").?.object;
+    try std.testing.expectEqualStrings("json_schema", response_format.get("type").?.string);
+    try std.testing.expectEqualStrings("person", response_format.get("json_schema").?.object.get("name").?.string);
+}
+
+test "integration generateObject uses Anthropic JSON-tool fallback" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text =
+        \\{"id":"msg-object","type":"message","role":"assistant","model":"claude-3-haiku-20240307","content":[{"type":"tool_use","id":"tool-json","name":"json","input":{"name":"Ada"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":4}}
+        },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-3-haiku-20240307", null);
+    const Shape = struct { name: []const u8 };
+    var result = try ai.generateObject(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "Return a name." },
+        .schema = provider_utils.schemaFromType(Shape),
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Ada", result.object.object.get("name").?.string);
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const request = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena_state.allocator(),
+        server.recordedRequests()[0].body,
+        .{},
+    );
+    try std.testing.expect(request.object.get("output_config") == null);
+    try std.testing.expectEqualStrings(
+        "json",
+        request.object.get("tools").?.array.items[0].object.get("name").?.string,
+    );
+}
+
+test "integration streamObject parses OpenAI SSE partials" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"id\":\"stream-object\",\"created\":1700000000,\"model\":\"vendor/object\",\"choices\":[{\"delta\":{\"content\":\"{\\\"name\\\":\"}}]}" },
+            .{ .data = "{\"id\":\"stream-object\",\"choices\":[{\"delta\":{\"content\":\"\\\"Ada\\\"}\"}}]}" },
+            .{ .data = "{\"id\":\"stream-object\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3}}" },
+            .{ .data = "[DONE]" },
+        } },
+    });
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = openai_compatible.createOpenAiCompatible(.{
+        .provider_name = "test-provider",
+        .base_url = server.baseUrl(&base_buffer),
+        .transport = client.transport(),
+        .include_usage = true,
+        .supports_structured_outputs = true,
+    });
+    var chat = try factory.chatModel("vendor/object", null);
+    const Shape = struct { name: []const u8 };
+    var result = try ai.streamObject(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "Return a name." },
+        .schema = provider_utils.schemaFromType(Shape),
+    });
+    defer result.deinit(io);
+    var partials = result.partialObjectStream();
+    var partial_count: usize = 0;
+    while (try partials.next(io)) |_| partial_count += 1;
+    try std.testing.expect(partial_count > 0);
+    try std.testing.expectEqualStrings("Ada", (try result.object(io)).object.get("name").?.string);
+}
+
+test "integration streamObject parses Anthropic JSON-tool SSE fallback" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "text/event-stream",
+        .body = .{ .sse = &.{
+            .{ .data = "{\"type\":\"message_start\",\"message\":{\"id\":\"msg-object\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-haiku-20240307\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1},\"content\":[],\"stop_reason\":null}}" },
+            .{ .data = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-json\",\"name\":\"json\",\"input\":{}}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"name\\\":\"}}" },
+            .{ .data = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Ada\\\"}\"}}" },
+            .{ .data = "{\"type\":\"content_block_stop\",\"index\":0}" },
+            .{ .data = "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}" },
+            .{ .data = "{\"type\":\"message_stop\"}" },
+        } },
+    });
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var base_buffer: [64]u8 = undefined;
+    const factory = try anthropic.createAnthropic(.{
+        .base_url = server.baseUrl(&base_buffer),
+        .api_key = "test-key",
+        .transport = client.transport(),
+    });
+    var chat = try factory.messages("claude-3-haiku-20240307", null);
+    const Shape = struct { name: []const u8 };
+    var result = try ai.streamObject(io, allocator, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "Return a name." },
+        .schema = provider_utils.schemaFromType(Shape),
+    });
+    defer result.deinit(io);
+    try std.testing.expectEqualStrings("Ada", (try result.object(io)).object.get("name").?.string);
+
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    const request = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        request_arena.allocator(),
+        server.recordedRequests()[0].body,
+        .{},
+    );
+    try std.testing.expectEqualStrings(
+        "json",
+        request.object.get("tools").?.array.items[0].object.get("name").?.string,
+    );
+}
+
+test "integration embedMany uses OpenAI-compatible embeddings endpoint and chunks" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const server = try test_support.MockServer.start(allocator, io);
+    defer server.deinit();
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text = "{\"data\":[{\"embedding\":[0.1,0.2]},{\"embedding\":[0.3,0.4]}],\"usage\":{\"prompt_tokens\":4}}" },
+    });
+    try server.enqueue(.{
+        .content_type = "application/json",
+        .body = .{ .text = "{\"data\":[{\"embedding\":[0.5,0.6]}],\"usage\":{\"prompt_tokens\":2}}" },
+    });
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var url_arena = std.heap.ArenaAllocator.init(allocator);
+    defer url_arena.deinit();
+    const base_url = try makeUrl(url_arena.allocator(), server, "/v1");
+    const factory = openai_compatible.createOpenAiCompatible(.{
+        .provider_name = "test-provider",
+        .base_url = base_url,
+        .api_key = "test-key",
+        .transport = client.transport(),
+        .max_embeddings_per_call = 2,
+    });
+    var embedding_model = try factory.embeddingModel("text-embedding", null);
+    const values = [_][]const u8{ "one", "two", "three" };
+    var result = try ai.embedMany(io, allocator, .{
+        .model = .{ .model = embedding_model.embeddingModel() },
+        .values = &values,
+        .max_parallel_calls = 1,
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(3, result.embeddings.len);
+    try std.testing.expectEqual(@as(f64, 0.5), result.embeddings[2][0]);
+    try std.testing.expectEqual(6, result.usage.tokens.?);
+
+    const requests = server.recordedRequests();
+    try std.testing.expectEqual(2, requests.len);
+    try std.testing.expectEqualStrings("/v1/embeddings", requests[0].target);
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    const first = try std.json.parseFromSliceLeaky(std.json.Value, request_arena.allocator(), requests[0].body, .{});
+    try std.testing.expectEqualStrings("float", first.object.get("encoding_format").?.string);
+    try std.testing.expectEqual(2, first.object.get("input").?.array.items.len);
+}
+
+test "integration Anthropic rejects embedding model lookup" {
+    var client = provider_utils.HttpClientTransport.init(std.testing.allocator, std.testing.io);
+    defer client.deinit();
+    const factory = try anthropic.createAnthropic(.{ .transport = client.transport() });
+    var diagnostics = provider.Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
+    try std.testing.expectError(error.NoSuchModelError, factory.embeddingModel("anything", &diagnostics));
+    try std.testing.expectEqual(.embedding_model, diagnostics.payload.no_such_model.model_type);
+}
+
+test "live Phase 7 Anthropic generateObject and streamObject smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_path = "/home/autark/src/rctr/.env";
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        env_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch {
+        std.debug.print("live Phase 7 object smoke skipped: env file unavailable\n", .{});
+        return error.SkipZigTest;
+    };
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "ANTHROPIC_API_KEY") orelse {
+        std.debug.print("live Phase 7 object smoke skipped: API key absent\n", .{});
+        return error.SkipZigTest;
+    };
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    const factory = try anthropic.createAnthropic(.{
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "claude-haiku-4-5-20251001";
+    var generate_model = try factory.messages(model_id, null);
+    const Shape = struct { answer: []const u8 };
+    var generated = try ai.generateObject(io, allocator, .{
+        .model = .{ .model = generate_model.languageModel() },
+        .prompt = .{ .text = "Return an object whose answer is exactly ok." },
+        .schema = provider_utils.schemaFromType(Shape),
+        .max_output_tokens = 64,
+    });
+    defer generated.deinit();
+    try std.testing.expectEqualStrings("ok", generated.object.object.get("answer").?.string);
+
+    var stream_model = try factory.messages(model_id, null);
+    var streamed = try ai.streamObject(io, allocator, .{
+        .model = .{ .model = stream_model.languageModel() },
+        .prompt = .{ .text = "Return an object whose answer is exactly ok." },
+        .schema = provider_utils.schemaFromType(Shape),
+        .max_output_tokens = 64,
+    });
+    defer streamed.deinit(io);
+    var partials = streamed.partialObjectStream();
+    var partial_count: usize = 0;
+    while (try partials.next(io)) |_| partial_count += 1;
+    const final_object = try streamed.object(io);
+    try std.testing.expectEqualStrings("ok", final_object.object.get("answer").?.string);
+    try std.testing.expect(partial_count > 0);
+    std.debug.print(
+        "live Phase 7 objects: model={s} generate=ok stream=ok partials={d}\n",
+        .{ model_id, partial_count },
+    );
+}
+
 test "live Anthropic generate and stream smoke" {
     if (!build_options.live) return error.SkipZigTest;
 

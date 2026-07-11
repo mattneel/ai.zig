@@ -55,6 +55,19 @@ pub const Anthropic = struct {
     ) provider.Error!AnthropicLanguageModel {
         return self.messages(model_id, diag);
     }
+
+    pub fn embeddingModel(
+        _: *const Anthropic,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!provider.EmbeddingModel {
+        if (diag) |diagnostics| provider.Diagnostics.set(diag, diagnostics.allocator, .{ .no_such_model = .{
+            .message = "Anthropic does not provide embedding models.",
+            .model_id = model_id,
+            .model_type = .embedding_model,
+        } });
+        return error.NoSuchModelError;
+    }
 };
 
 pub fn createAnthropic(settings: Settings) error{InvalidArgumentError}!Anthropic {

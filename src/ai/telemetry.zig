@@ -43,6 +43,8 @@ pub const Telemetry = struct {
         onEmbedEnd: ?Callback(events.EmbedEndEvent) = null,
         onRerankStart: ?Callback(events.RerankStartEvent) = null,
         onRerankEnd: ?Callback(events.RerankEndEvent) = null,
+        onObjectStart: ?Callback(events.GenerateObjectStartEvent) = null,
+        onObjectEnd: ?Callback(events.GenerateObjectEndEvent) = null,
 
         enterModelCall: ?*const fn (ctx: ?*anyopaque, call_id: []const u8) ?*anyopaque = null,
         exitModelCall: ?*const fn (ctx: ?*anyopaque, token: ?*anyopaque) void = null,
@@ -147,6 +149,14 @@ pub const Dispatcher = struct {
 
     pub fn onObjectStepStart(self: Dispatcher, event: *const events.ObjectStepStartEvent) std.Io.Cancelable!void {
         return dispatch(events.ObjectStepStartEvent, "onObjectStepStart", self, event);
+    }
+
+    pub fn onObjectStart(self: Dispatcher, event: *const events.GenerateObjectStartEvent) std.Io.Cancelable!void {
+        return dispatch(events.GenerateObjectStartEvent, "onObjectStart", self, event);
+    }
+
+    pub fn onObjectEnd(self: Dispatcher, event: *const events.GenerateObjectEndEvent) std.Io.Cancelable!void {
+        return dispatch(events.GenerateObjectEndEvent, "onObjectEnd", self, event);
     }
 
     pub fn onObjectStepEnd(self: Dispatcher, event: *const events.ObjectStepEndEvent) std.Io.Cancelable!void {

@@ -6,12 +6,15 @@ const events = @import("events.zig");
 const message = @import("message.zig");
 const telemetry = @import("telemetry.zig");
 const smooth_stream = @import("stream/smooth_stream.zig");
+const output_api = @import("output.zig");
+const provider_utils_api = @import("provider_utils");
 
 const ScriptedModel = struct {
     scripts: []const []const provider.StreamPart,
     call_count: usize = 0,
     saw_tool_result_prompt: bool = false,
     states: [8]State = .{State{}} ** 8,
+    last_response_format: ?provider.ResponseFormat = null,
 
     const State = struct {
         parts: []const provider.StreamPart = &.{},
@@ -65,6 +68,7 @@ const ScriptedModel = struct {
         const self: *ScriptedModel = @ptrCast(@alignCast(raw));
         const index = self.call_count;
         self.call_count += 1;
+        self.last_response_format = options.response_format;
         for (options.prompt) |prompt_message| switch (prompt_message) {
             .tool => |tool_message| for (tool_message.content) |content| switch (content) {
                 .tool_result => self.saw_tool_result_prompt = true,
@@ -878,8 +882,48 @@ test "streamText filters raw and empty deltas and partial output follows first t
     try std.testing.expectEqualStrings("AB", try result.text(std.testing.io));
     var partial = result.partialOutputStream();
     defer partial.deinit();
-    try std.testing.expectEqualStrings("A", (try partial.next(std.testing.io)).?);
+    try std.testing.expectEqualStrings("A", (try partial.next(std.testing.io)).?.text);
     try std.testing.expectEqual(null, try partial.next(std.testing.io));
+}
+
+test "streamText object output emits deduplicated partial values and passes schema" {
+    const script = [_]provider.StreamPart{
+        .{ .stream_start = .{ .warnings = &.{} } },
+        .{ .text_start = .{ .id = "object" } },
+        .{ .text_delta = .{ .id = "object", .delta = "{" } },
+        .{ .text_delta = .{ .id = "object", .delta = "\"name\":" } },
+        .{ .text_delta = .{ .id = "object", .delta = "\"Ada\"" } },
+        .{ .text_delta = .{ .id = "object", .delta = "}" } },
+        .{ .text_end = .{ .id = "object" } },
+        .{ .finish = .{ .finish_reason = .{ .unified = .stop }, .usage = usage(1, 2) } },
+    };
+    const scripts = [_][]const provider.StreamPart{&script};
+    var model: ScriptedModel = .{ .scripts = &scripts };
+    const Shape = struct { name: []const u8 };
+    var result = try stream_text.streamText(std.testing.io, std.testing.allocator, .{
+        .model = .{ .model = model.languageModel() },
+        .prompt = .{ .text = "name" },
+        .output = output_api.object(provider_utils_api.schemaFromType(Shape)),
+    });
+    defer result.deinit(std.testing.io);
+    try result.consumeStream(std.testing.io);
+
+    try std.testing.expect(model.last_response_format.? == .json);
+    var partials = result.partialOutputStream();
+    defer partials.deinit();
+    var count: usize = 0;
+    var final_name: ?[]const u8 = null;
+    while (try partials.next(std.testing.io)) |partial| {
+        count += 1;
+        if (partial.json == .object) {
+            if (partial.json.object.get("name")) |name| {
+                if (name == .string) final_name = name.string;
+            }
+        }
+    }
+    try std.testing.expect(count >= 1);
+    try std.testing.expectEqualStrings("Ada", final_name.?);
+    try std.testing.expectEqualStrings("Ada", (try result.output(std.testing.io)).json.object.get("name").?.string);
 }
 
 test "smoothStream word chunks preserve metadata and flush trailing text" {

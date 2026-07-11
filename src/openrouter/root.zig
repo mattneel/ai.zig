@@ -48,6 +48,25 @@ pub const OpenRouter = struct {
         return self.chatModel(model_id, diag);
     }
 
+    pub fn embeddingModel(
+        self: *OpenRouter,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!openai_compatible.EmbeddingModel {
+        const compatible = openai_compatible.createOpenAiCompatible(.{
+            .provider_name = "openrouter",
+            .base_url = self.base_url,
+            .api_key = self.settings.api_key,
+            .api_key_env_var = "OPENROUTER_API_KEY",
+            .env = self.settings.env,
+            .headers = .{ .dynamic = .{ .ctx = self, .resolve_fn = resolveHeaders } },
+            .transport = self.settings.transport,
+            .include_usage = self.settings.include_usage,
+            .supports_structured_outputs = true,
+        });
+        return compatible.embeddingModel(model_id, diag);
+    }
+
     fn resolveHeaders(raw: ?*anyopaque) []const provider_utils.HeaderEntry {
         const self: *OpenRouter = @ptrCast(@alignCast(raw.?));
         return self.attribution[0..self.attribution_len];

@@ -208,6 +208,16 @@ pub const LanguageModelRef = union(enum) {
     model: provider.LanguageModel,
 };
 
+pub const EmbeddingModelRef = union(enum) {
+    id: []const u8,
+    model: provider.EmbeddingModel,
+};
+
+pub const RerankingModelRef = union(enum) {
+    id: []const u8,
+    model: provider.RerankingModel,
+};
+
 pub const LanguageModelEntry = struct { id: []const u8, model: LanguageModelRef };
 pub const EmbeddingModelEntry = struct { id: []const u8, model: provider.EmbeddingModel };
 pub const ImageModelEntry = struct { id: []const u8, model: provider.ImageModel };
@@ -352,6 +362,17 @@ const BuiltinOpenRouter = struct {
         stored.* = model;
         return stored.languageModel();
     }
+
+    fn embeddingModel(
+        self: *BuiltinOpenRouter,
+        id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) (provider.Error || Allocator.Error)!provider.EmbeddingModel {
+        const model = try self.factory.embeddingModel(id, diag);
+        const stored = try self.arena.allocator().create(@TypeOf(model));
+        stored.* = model;
+        return stored.embeddingModel();
+    }
 };
 
 const DefaultProviderState = struct {
@@ -423,6 +444,67 @@ pub fn resolveLanguageModel(
     };
 }
 
+pub fn resolveEmbeddingModel(
+    model: EmbeddingModelRef,
+    diag: ?*provider.Diagnostics,
+) (provider.Error || Allocator.Error)!provider.EmbeddingModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| resolveEmbeddingModelId(id, diag),
+    };
+}
+
+fn resolveEmbeddingModelId(
+    id: []const u8,
+    diag: ?*provider.Diagnostics,
+) (provider.Error || Allocator.Error)!provider.EmbeddingModel {
+    lockDefault();
+    if (default_state.provider_value) |selected| {
+        default_mutex.unlock();
+        return selected.embeddingModel(id, diag);
+    }
+    if (!build_options.default_openrouter) {
+        default_mutex.unlock();
+        return noDefaultModel(diag, id, .embedding_model);
+    }
+    if (default_state.env.get("OPENROUTER_API_KEY") == null) {
+        default_mutex.unlock();
+        return missingOpenRouterKey(diag);
+    }
+    const runtime = default_state.runtime orelse {
+        default_mutex.unlock();
+        return noDefaultRuntime(diag);
+    };
+    if (default_state.builtin == null) {
+        default_state.builtin = BuiltinOpenRouter.init(runtime, default_state.env) catch |err| {
+            default_mutex.unlock();
+            return err;
+        };
+    }
+    const result = default_state.builtin.?.embeddingModel(id, diag) catch |err| {
+        default_mutex.unlock();
+        return err;
+    };
+    default_mutex.unlock();
+    return result;
+}
+
+pub fn resolveRerankingModel(
+    model: RerankingModelRef,
+    diag: ?*provider.Diagnostics,
+) provider.Error!provider.RerankingModel {
+    return switch (model) {
+        .model => |value| value,
+        .id => |id| blk: {
+            lockDefault();
+            defer default_mutex.unlock();
+            const selected = default_state.provider_value orelse
+                break :blk noDefaultModel(diag, id, .reranking_model);
+            break :blk selected.rerankingModel(id, diag);
+        },
+    };
+}
+
 fn resolveLanguageModelId(
     id: []const u8,
     diag: ?*provider.Diagnostics,
@@ -479,6 +561,21 @@ fn noDefaultProvider(diag: ?*provider.Diagnostics, id: []const u8) provider.Erro
         .message = "No default provider is configured",
         .model_id = id,
         .model_type = .language_model,
+        .provider_id = "default",
+        .available_providers = &.{},
+    } });
+    return error.NoSuchProviderError;
+}
+
+fn noDefaultModel(
+    diag: ?*provider.Diagnostics,
+    id: []const u8,
+    model_type: provider.ModelType,
+) provider.Error {
+    if (diag) |diagnostics| provider.Diagnostics.set(diag, diagnostics.allocator, .{ .no_such_provider = .{
+        .message = "No default provider is configured",
+        .model_id = id,
+        .model_type = model_type,
         .provider_id = "default",
         .available_providers = &.{},
     } });

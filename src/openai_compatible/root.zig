@@ -10,6 +10,7 @@ pub const HeaderSource = config.HeaderSource;
 pub const QueryParam = config.QueryParam;
 pub const ErrorHooks = config.ErrorHooks;
 pub const ChatLanguageModel = @import("chat_language_model.zig").ChatLanguageModel;
+pub const EmbeddingModel = @import("embedding_model.zig").EmbeddingModel;
 
 pub const OpenAiCompatible = struct {
     settings: Settings,
@@ -55,6 +56,41 @@ pub const OpenAiCompatible = struct {
         diag: ?*provider.Diagnostics,
     ) provider.Error!ChatLanguageModel {
         return self.chatModel(model_id, diag);
+    }
+
+    pub fn embeddingModel(
+        self: *const OpenAiCompatible,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!EmbeddingModel {
+        if (self.settings.provider_name.len == 0) {
+            return config.invalidSettings(diag, "name", "OpenAI-compatible provider name is required");
+        }
+        if (self.settings.base_url.len == 0) {
+            return config.invalidSettings(diag, "baseURL", "OpenAI-compatible base URL is required");
+        }
+        if (model_id.len == 0) {
+            return config.invalidSettings(diag, "modelId", "Model id is required");
+        }
+        return .{
+            .model_id = model_id,
+            .config = .{
+                .provider = self.settings.provider_name,
+                .provider_name = providerOptionsName(self.settings.provider_name),
+                .base_url = std.mem.trimEnd(u8, self.settings.base_url, "/"),
+                .api_key = self.settings.api_key,
+                .api_key_env_var = self.settings.api_key_env_var,
+                .env = self.settings.env,
+                .headers = self.settings.headers,
+                .query_params = self.settings.query_params,
+                .transport = self.settings.transport,
+                .include_usage = self.settings.include_usage,
+                .supports_structured_outputs = self.settings.supports_structured_outputs,
+                .max_embeddings_per_call = self.settings.max_embeddings_per_call,
+                .supports_parallel_embedding_calls = self.settings.supports_parallel_embedding_calls,
+                .error_hooks = self.settings.error_hooks,
+            },
+        };
     }
 };
 

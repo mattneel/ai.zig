@@ -51,6 +51,9 @@ pub const fix_json = @import("fix_json.zig");
 pub const fixJson = fix_json.fixJson;
 pub const parse_partial_json = @import("parse_partial_json.zig");
 pub const parsePartialJson = parse_partial_json.parsePartialJson;
+pub const is_deep_equal_data = @import("is_deep_equal_data.zig");
+pub const isDeepEqualData = is_deep_equal_data.isDeepEqualData;
+pub const isDeepEqualOptionalData = is_deep_equal_data.optional;
 pub const schema = @import("schema.zig");
 pub const Schema = schema.Schema;
 pub const SchemaDocument = schema.Document;
@@ -114,6 +117,7 @@ comptime {
     _ = media_type.detectMediaType;
     _ = fix_json.fixJson;
     _ = parse_partial_json.parsePartialJson;
+    _ = is_deep_equal_data.isDeepEqualData;
     _ = schema.schemaFromType;
     _ = sse.SseDecoder;
     _ = retry_api.retry;

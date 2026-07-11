@@ -52,6 +52,8 @@ pub const Settings = struct {
     transport: provider_utils.HttpTransport,
     include_usage: bool = false,
     supports_structured_outputs: bool = false,
+    max_embeddings_per_call: ?u32 = null,
+    supports_parallel_embedding_calls: ?bool = null,
     error_hooks: ErrorHooks = .{},
 };
 
@@ -67,6 +69,8 @@ pub const Config = struct {
     transport: provider_utils.HttpTransport,
     include_usage: bool,
     supports_structured_outputs: bool,
+    max_embeddings_per_call: ?u32 = null,
+    supports_parallel_embedding_calls: ?bool = null,
     error_hooks: ErrorHooks,
 };
 

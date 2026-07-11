@@ -14,6 +14,7 @@ const events = @import("events.zig");
 const generate_text = @import("generate_text.zig");
 const logger = @import("logger.zig");
 const message = @import("message.zig");
+const output_api = @import("output.zig");
 const prompt_api = @import("prompt.zig");
 const registry = @import("registry.zig");
 const response_message_builder = @import("response_messages.zig");
@@ -38,6 +39,15 @@ const Broadcast = broadcast_api.Broadcast(Part);
 const Stitchable = stitchable_api.Stitchable(Part);
 const ChildStream = stitchable_api.ChildStream(Part);
 const OneShot = provider_utils.OneShot;
+
+fn outputValuesEqual(left: ?types.OutputValue, right: types.OutputValue) bool {
+    const value = left orelse return false;
+    if (std.meta.activeTag(value) != std.meta.activeTag(right)) return false;
+    return switch (value) {
+        .text => |text_value| std.mem.eql(u8, text_value, right.text),
+        .json => |json_value| provider_utils.isDeepEqualData(json_value, right.json),
+    };
+}
 
 pub const StreamTransform = transform_api.StreamTransform;
 pub const StopStreamFn = transform_api.StopStreamFn;
@@ -118,8 +128,11 @@ pub const PartialOutputStream = struct {
     first_id: ?[]const u8 = null,
     text: std.ArrayList(u8) = .empty,
     allocator: Allocator,
+    parse_arena: std.heap.ArenaAllocator,
+    output_spec: output_api.Output,
+    latest: ?types.OutputValue = null,
 
-    pub fn next(self: *PartialOutputStream, io: std.Io) anyerror!?[]const u8 {
+    pub fn next(self: *PartialOutputStream, io: std.Io) anyerror!?types.OutputValue {
         while (try self.cursor.next(io)) |part| switch (part) {
             .text_start => |value| {
                 if (self.first_id == null) self.first_id = value.id;
@@ -128,7 +141,13 @@ pub const PartialOutputStream = struct {
                 if (self.first_id == null) self.first_id = value.id;
                 if (std.mem.eql(u8, self.first_id.?, value.id)) {
                     try self.text.appendSlice(self.allocator, value.text);
-                    return self.text.items;
+                    const partial = try self.output_spec.parsePartial(
+                        self.parse_arena.allocator(),
+                        self.text.items,
+                    ) orelse continue;
+                    if (outputValuesEqual(self.latest, partial)) continue;
+                    self.latest = partial;
+                    return partial;
                 }
             },
             else => {},
@@ -138,6 +157,35 @@ pub const PartialOutputStream = struct {
 
     pub fn deinit(self: *PartialOutputStream) void {
         self.text.deinit(self.allocator);
+        self.parse_arena.deinit();
+        self.* = undefined;
+    }
+};
+
+pub const ElementOutputStream = struct {
+    partial: PartialOutputStream,
+    pending: []const std.json.Value = &.{},
+    pending_index: usize = 0,
+    published: usize = 0,
+
+    pub fn next(self: *ElementOutputStream, io: std.Io) anyerror!?std.json.Value {
+        while (true) {
+            if (self.pending_index < self.pending.len) {
+                const value = self.pending[self.pending_index];
+                self.pending_index += 1;
+                self.published += 1;
+                return value;
+            }
+            const partial = try self.partial.next(io) orelse return null;
+            if (partial != .json or partial.json != .array) continue;
+            if (partial.json.array.items.len <= self.published) continue;
+            self.pending = partial.json.array.items[self.published..];
+            self.pending_index = 0;
+        }
+    }
+
+    pub fn deinit(self: *ElementOutputStream) void {
+        self.partial.deinit();
         self.* = undefined;
     }
 };
@@ -162,13 +210,26 @@ pub const StreamTextResult = struct {
         return .{ .cursor = self.core.broadcast.cursor() };
     }
 
-    /// Text-only partial-output adapter. Object/array strategies land in
-    /// Phase 7; the first text id follows upstream's output transform.
+    /// Output-aware partial adapter. Only the first text part is accumulated,
+    /// matching upstream's output transform contract.
     pub fn partialOutputStream(self: *StreamTextResult) PartialOutputStream {
         return .{
             .cursor = self.core.broadcast.cursor(),
             .allocator = self.core.gpa,
+            .parse_arena = .init(self.core.gpa),
+            .output_spec = self.core.options.output orelse output_api.text(),
         };
+    }
+
+    pub fn elementStream(
+        self: *StreamTextResult,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!ElementOutputStream {
+        const output_spec = self.core.options.output orelse {
+            return unsupportedElementStream(diag);
+        };
+        if (!output_spec.hasElementStream()) return unsupportedElementStream(diag);
+        return .{ .partial = self.partialOutputStream() };
     }
 
     pub fn consumeStream(self: *StreamTextResult, io: std.Io) anyerror!void {
@@ -252,12 +313,12 @@ pub const StreamTextResult = struct {
 
     pub fn output(self: *StreamTextResult, io: std.Io) anyerror!types.OutputValue {
         const final_step = try self.finalStep(io);
-        const output_spec = self.core.options.output orelse generate_text.text();
+        const output_spec = self.core.options.output orelse output_api.text();
         return output_spec.parseComplete(self.core.arena, final_step.text(), &.{
             .response = final_step.response,
             .usage = final_step.usage,
             .finish_reason = final_step.finish_reason,
-        });
+        }, self.core.options.diag);
     }
 
     pub fn deinit(self: *StreamTextResult, io: std.Io) void {
@@ -273,6 +334,16 @@ pub const StreamTextResult = struct {
         try outcome;
     }
 };
+
+fn unsupportedElementStream(diag: ?*provider.Diagnostics) provider.Error {
+    if (diag) |diagnostics| provider.Diagnostics.set(diag, diagnostics.allocator, .{
+        .unsupported_functionality = .{
+            .message = "Element streams are only available for array output.",
+            .functionality = "element streams in non-array output mode",
+        },
+    });
+    return error.UnsupportedFunctionalityError;
+}
 
 pub fn streamText(io: std.Io, gpa: Allocator, options: StreamTextOptions) !StreamTextResult {
     const core = try gpa.create(Core);
@@ -671,7 +742,11 @@ fn createAndAddStep(self: *Core, io: std.Io) anyerror!void {
             .seed = self.options.seed,
             .reasoning = self.options.reasoning,
         },
-        .response_format = (self.options.output orelse generate_text.text()).response_format,
+        .response_format = try (self.options.output orelse output_api.text()).responseFormat(
+            io,
+            step_arena,
+            self.options.diag,
+        ),
         .headers = self.options.headers,
         .provider_options = step_provider_options,
         .include_raw_chunks = self.options.include_raw_chunks,

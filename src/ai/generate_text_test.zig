@@ -5,6 +5,7 @@ const approval_signature = @import("tool_approval_signature.zig");
 const events = @import("events.zig");
 const generate = @import("generate_text.zig");
 const message = @import("message.zig");
+const output_api = @import("output.zig");
 const telemetry = @import("telemetry.zig");
 const tool_api = @import("tool.zig");
 
@@ -13,6 +14,7 @@ const FakeLanguageModel = struct {
     call_count: usize = 0,
     prompts: [16]?provider.Prompt = .{null} ** 16,
     sleep_ms: u64 = 0,
+    last_response_format: ?provider.ResponseFormat = null,
 
     const Action = union(enum) {
         result: provider.GenerateResult,
@@ -55,6 +57,7 @@ const FakeLanguageModel = struct {
         const index = self.call_count;
         self.call_count += 1;
         if (index < self.prompts.len) self.prompts[index] = options.prompt;
+        self.last_response_format = options.response_format;
         if (self.sleep_ms != 0) {
             const duration: i64 = @intCast(self.sleep_ms);
             try io.sleep(.fromMilliseconds(duration), .awake);
@@ -121,6 +124,24 @@ test "generateText defaults to one step and owns text output" {
     try std.testing.expectEqualStrings("hello", result.text());
     try std.testing.expectEqual(3, result.usage().input_tokens.total.?);
     try std.testing.expectError(error.NoOutputGeneratedError, result.output());
+}
+
+test "generateText object output passes response format and parses final JSON" {
+    const content = [_]provider.Content{.{ .text = .{ .text = "{\"name\":\"Ada\"}" } }};
+    const actions = [_]FakeLanguageModel.Action{.{ .result = generated(&content, .stop, 3, 2) }};
+    var fake: FakeLanguageModel = .{ .actions = &actions };
+    const Shape = struct { name: []const u8 };
+
+    var result = try generate.generateText(std.testing.io, std.testing.allocator, .{
+        .model = .{ .model = fake.languageModel() },
+        .prompt = .{ .text = "name" },
+        .output = output_api.object(provider_utils.schemaFromType(Shape)),
+    });
+    defer result.deinit();
+
+    try std.testing.expect(fake.last_response_format.? == .json);
+    try std.testing.expect(fake.last_response_format.?.json.schema != null);
+    try std.testing.expectEqualStrings("Ada", (try result.output()).json.object.get("name").?.string);
 }
 
 const WeatherTool = struct {

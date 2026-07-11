@@ -11,6 +11,7 @@ const provider_utils = @import("provider_utils");
 const events = @import("events.zig");
 const logger = @import("logger.zig");
 const message = @import("message.zig");
+const output_api = @import("output.zig");
 const prompt_api = @import("prompt.zig");
 const response_message_builder = @import("response_messages.zig");
 const registry = @import("registry.zig");
@@ -29,6 +30,8 @@ pub const TypedToolCall = types.TypedToolCall;
 pub const TypedToolResult = types.TypedToolResult;
 pub const TypedToolError = types.TypedToolError;
 pub const OutputValue = types.OutputValue;
+pub const Output = output_api.Output;
+pub const OutputParseContext = output_api.ParseContext;
 
 pub const ToolTimeout = struct {
     name: []const u8,
@@ -186,48 +189,8 @@ pub const RepairToolCallOptions = tool_common.RepairToolCallOptions;
 pub const RepairToolCall = tool_common.RepairToolCall;
 pub const RefineToolInput = tool_common.RefineToolInput;
 
-pub const OutputParseContext = struct {
-    response: types.ResponseMetadata,
-    usage: provider.Usage,
-    finish_reason: provider.FinishReason,
-};
-
-pub const Output = struct {
-    name: []const u8,
-    response_format: provider.ResponseFormat,
-    ctx: ?*anyopaque = null,
-    parse_complete_fn: *const fn (
-        ctx: ?*anyopaque,
-        arena: Allocator,
-        text_value: []const u8,
-        context: *const OutputParseContext,
-    ) provider.CallError!OutputValue,
-
-    pub fn parseComplete(
-        self: Output,
-        arena: Allocator,
-        text_value: []const u8,
-        context: *const OutputParseContext,
-    ) provider.CallError!OutputValue {
-        return self.parse_complete_fn(self.ctx, arena, text_value, context);
-    }
-};
-
 pub fn text() Output {
-    return .{
-        .name = "text",
-        .response_format = .{ .text = .{} },
-        .parse_complete_fn = struct {
-            fn parse(
-                _: ?*anyopaque,
-                _: Allocator,
-                text_value: []const u8,
-                _: *const OutputParseContext,
-            ) provider.CallError!OutputValue {
-                return .{ .text = text_value };
-            }
-        }.parse,
-    };
+    return output_api.text();
 }
 
 pub fn Callback(comptime Event: type) type {
@@ -604,7 +567,7 @@ fn runCall(state: *CallState) provider.CallError!CallData {
                 .response = final_step.response,
                 .usage = total_usage,
                 .finish_reason = final_step.finish_reason,
-            });
+            }, options.diag);
         }
     }
 
@@ -773,7 +736,10 @@ fn executeStep(
         options.diag,
     ) catch |err| return mapAnyError(state, err, "failed to convert prompt");
 
-    const response_format = if (options.output) |output| output.response_format else null;
+    const response_format = if (options.output) |output|
+        try output.responseFormat(state.io, state.arena, options.diag)
+    else
+        null;
     const model_options: provider.CallOptions = .{
         .prompt = provider_prompt,
         .max_output_tokens = call_settings.max_output_tokens,

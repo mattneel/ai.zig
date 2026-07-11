@@ -147,46 +147,104 @@ pub const ErrorEvent = struct {
     diag: ?*const provider.Diagnostics = null,
 };
 
-// ABI-stable callback slots reserved for later operation phases. Their dense
-// shapes carry correlation and model identity now; later phases may append
-// fields without changing the Telemetry vtable layout.
+pub const GenerateObjectStartEvent = struct {
+    call_id: []const u8,
+    operation_id: []const u8,
+    provider_name: []const u8,
+    model_id: []const u8,
+    instructions: ?[]const u8 = null,
+    messages: []const message.ModelMessage = &.{},
+    max_output_tokens: ?u64 = null,
+    temperature: ?f64 = null,
+    top_p: ?f64 = null,
+    top_k: ?f64 = null,
+    presence_penalty: ?f64 = null,
+    frequency_penalty: ?f64 = null,
+    seed: ?i64 = null,
+    max_retries: u32 = 2,
+    headers: ?provider.Headers = null,
+    provider_options: ?provider.ProviderOptions = null,
+    output: []const u8,
+    schema: ?std.json.Value = null,
+    schema_name: ?[]const u8 = null,
+    schema_description: ?[]const u8 = null,
+};
+
 pub const ObjectStepStartEvent = struct {
     call_id: []const u8,
     step_number: usize,
     provider_name: []const u8,
     model_id: []const u8,
+    provider_options: ?provider.ProviderOptions = null,
+    headers: ?provider.Headers = null,
+    prompt_messages: provider.Prompt = &.{},
 };
 
 pub const ObjectStepEndEvent = struct {
     call_id: []const u8,
     step_number: usize,
+    provider_name: []const u8,
+    model_id: []const u8,
+    finish_reason: provider.FinishReason,
+    usage: provider.Usage,
     object_text: []const u8,
+    reasoning: ?[]const u8 = null,
+    warnings: []const provider.Warning = &.{},
+    request: text_types.RequestMetadata = .{},
+    response: text_types.ResponseMetadata = .{},
+    provider_metadata: ?provider.ProviderMetadata = null,
+    ms_to_first_chunk: ?f64 = null,
+};
+
+pub const GenerateObjectEndEvent = struct {
+    call_id: []const u8,
+    object: ?std.json.Value = null,
+    err: ?anyerror = null,
+    reasoning: ?[]const u8 = null,
+    finish_reason: provider.FinishReason,
+    usage: provider.Usage,
+    warnings: []const provider.Warning = &.{},
+    request: text_types.RequestMetadata = .{},
+    response: text_types.ResponseMetadata = .{},
+    provider_metadata: ?provider.ProviderMetadata = null,
 };
 
 pub const EmbedStartEvent = struct {
     call_id: []const u8,
     embed_call_id: []const u8,
+    operation_id: []const u8,
     provider_name: []const u8,
     model_id: []const u8,
-    values: []const std.json.Value,
+    values: []const []const u8,
 };
 
 pub const EmbedEndEvent = struct {
     call_id: []const u8,
     embed_call_id: []const u8,
-    embeddings: []const []const f32,
+    operation_id: []const u8,
+    provider_name: []const u8,
+    model_id: []const u8,
+    values: []const []const u8,
+    embeddings: []const []const f64,
+    usage: provider.EmbeddingUsage = .{},
     warnings: []const provider.Warning = &.{},
 };
 
 pub const RerankStartEvent = struct {
     call_id: []const u8,
+    operation_id: []const u8,
     provider_name: []const u8,
     model_id: []const u8,
+    documents: provider.RerankingDocuments,
     query: []const u8,
-    top_n: ?usize = null,
+    top_n: ?u32 = null,
 };
 
 pub const RerankEndEvent = struct {
     call_id: []const u8,
+    operation_id: []const u8,
+    provider_name: []const u8,
+    model_id: []const u8,
+    documents_type: []const u8,
     ranking: []const provider.Ranking,
 };
