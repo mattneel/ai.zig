@@ -1,0 +1,76 @@
+# Local smoke checks (act 0.2.89):
+#   act push -j fmt
+#   act push -j test --matrix os:ubuntu-latest
+
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            build_target: ""
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            build_target: ""
+          - os: macos-latest
+            arch: arm64
+            build_target: ""
+          - os: macos-15-intel
+            arch: x86_64
+            build_target: ""
+          # The MSVC cross-compile pre-flight cannot supply libc for the FFI
+          # libraries. Tests stay native; artifacts use Zig's MinGW target.
+          - os: windows-latest
+            arch: x86_64
+            build_target: -Dtarget=x86_64-windows-gnu
+          - os: windows-11-arm
+            arch: arm64
+            build_target: -Dtarget=aarch64-windows-gnu
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # With no version input, setup-zig reads minimum_zig_version from
+      # build.zig.zon (currently 0.16.0).
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build modules and FFI libraries
+        run: zig build ${{ matrix.build_target }} --summary all
+
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Check formatting
+        run: zig fmt --check build.zig src
