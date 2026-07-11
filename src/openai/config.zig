@@ -29,6 +29,7 @@ pub const Settings = struct {
     env: provider_utils.EnvLookup = .empty,
     headers: HeaderSource = .{ .static = &.{} },
     transport: provider_utils.HttpTransport,
+    websocket_factory: provider_utils.WebSocketFactory = provider_utils.defaultWebSocketFactory,
     name: []const u8 = "openai",
 };
 
@@ -41,6 +42,7 @@ pub const Config = struct {
     env: provider_utils.EnvLookup,
     headers: HeaderSource,
     transport: provider_utils.HttpTransport,
+    websocket_factory: provider_utils.WebSocketFactory = provider_utils.defaultWebSocketFactory,
     provider_name: []const u8,
     provider_options_name: []const u8,
 };

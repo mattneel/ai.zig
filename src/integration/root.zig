@@ -2849,3 +2849,424 @@ test "live ToolLoopAgent streams an Anthropic two-step weather loop" {
         },
     );
 }
+
+const RealtimeDummyHttp = struct {
+    fn request(
+        _: *anyopaque,
+        _: std.Io,
+        _: std.mem.Allocator,
+        _: provider_utils.RequestSpec,
+        _: ?*provider.Diagnostics,
+    ) provider_utils.RequestError!provider_utils.Response {
+        return error.APICallError;
+    }
+};
+
+fn dummyHttpTransport(marker: *u8) provider_utils.HttpTransport {
+    return .{ .ctx = marker, .vtable = &.{ .request = RealtimeDummyHttp.request } };
+}
+
+const ScriptRealtimeModel = struct {
+    inner: provider.RealtimeModel,
+    url: []const u8,
+
+    fn model(self: *ScriptRealtimeModel) provider.RealtimeModel {
+        return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    const vtable: provider.RealtimeModel.VTable = .{
+        .provider = providerName,
+        .modelId = modelId,
+        .doCreateClientSecret = createSecret,
+        .getWebSocketConfig = websocketConfig,
+        .parseServerEvent = parseServerEvent,
+        .serializeClientEvent = serializeClientEvent,
+        .buildSessionConfig = buildSessionConfig,
+        .getHealthCheckResponse = healthCheck,
+    };
+    fn fromRaw(raw: *anyopaque) *ScriptRealtimeModel {
+        return @ptrCast(@alignCast(raw));
+    }
+    fn providerName(raw: *anyopaque) []const u8 {
+        return fromRaw(raw).inner.provider();
+    }
+    fn modelId(raw: *anyopaque) []const u8 {
+        return fromRaw(raw).inner.modelId();
+    }
+    fn createSecret(
+        raw: *anyopaque,
+        _: std.Io,
+        _: std.mem.Allocator,
+        _: *const provider.ClientSecretOptions,
+        _: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError!provider.ClientSecretResult {
+        return .{ .token = "script-token", .url = fromRaw(raw).url };
+    }
+    fn websocketConfig(
+        _: *anyopaque,
+        _: std.mem.Allocator,
+        options: *const provider.WebSocketOptions,
+        _: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError!provider.WebSocketConfig {
+        return .{ .url = options.url, .protocols = &.{"realtime"} };
+    }
+    fn parseServerEvent(
+        raw: *anyopaque,
+        arena: std.mem.Allocator,
+        value: *const std.json.Value,
+        diag: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError![]const provider.ServerEvent {
+        return fromRaw(raw).inner.parseServerEvent(arena, value, diag);
+    }
+    fn serializeClientEvent(
+        raw: *anyopaque,
+        io: std.Io,
+        arena: std.mem.Allocator,
+        event: *const provider.ClientEvent,
+        diag: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError!std.json.Value {
+        return fromRaw(raw).inner.serializeClientEvent(io, arena, event, diag);
+    }
+    fn buildSessionConfig(
+        raw: *anyopaque,
+        arena: std.mem.Allocator,
+        config: *const provider.SessionConfig,
+        diag: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError!std.json.Value {
+        return fromRaw(raw).inner.buildSessionConfig(arena, config, diag);
+    }
+    fn healthCheck(
+        raw: *anyopaque,
+        arena: std.mem.Allocator,
+        value: *const std.json.Value,
+        diag: ?*provider.Diagnostics,
+    ) provider.realtime_model.CallError!?std.json.Value {
+        return fromRaw(raw).inner.getHealthCheckResponse(arena, value, diag);
+    }
+};
+
+const RealtimeScript = struct {
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+    saw_session_update: bool = false,
+    saw_text_item: bool = false,
+    saw_tool_output: bool = false,
+    saw_followup_response: bool = false,
+
+    fn run(
+        raw: ?*anyopaque,
+        _: std.Io,
+        socket: *std.http.Server.WebSocket,
+        _: *std.http.Server.Request,
+    ) anyerror!void {
+        const self: *RealtimeScript = @ptrCast(@alignCast(raw.?));
+        const first = try test_support.websocket_server.readText(socket);
+        self.record(&self.saw_session_update, std.mem.indexOf(u8, first, "\"type\":\"session.update\"") != null);
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"session.created\",\"session\":{\"id\":\"session-1\"}}");
+
+        const item = try test_support.websocket_server.readText(socket);
+        self.record(&self.saw_text_item, std.mem.indexOf(u8, item, "conversation.item.create") != null and std.mem.indexOf(u8, item, "hello realtime") != null);
+        const response = try test_support.websocket_server.readText(socket);
+        if (std.mem.indexOf(u8, response, "response.create") == null) return error.MissingResponseCreate;
+
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"response.output_text.delta\",\"response_id\":\"r1\",\"item_id\":\"i1\",\"delta\":\"Hello\"}");
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"response.output_text.done\",\"response_id\":\"r1\",\"item_id\":\"i1\",\"text\":\"Hello realtime\"}");
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"response.function_call_arguments.delta\",\"response_id\":\"r1\",\"item_id\":\"tool-item\",\"call_id\":\"call-1\",\"delta\":\"{}\"}");
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"response.function_call_arguments.done\",\"response_id\":\"r1\",\"item_id\":\"tool-item\",\"call_id\":\"call-1\",\"name\":\"echo\",\"arguments\":\"{}\"}");
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"response.done\",\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}");
+
+        const output = try test_support.websocket_server.readText(socket);
+        self.record(&self.saw_tool_output, std.mem.indexOf(u8, output, "function_call_output") != null and std.mem.indexOf(u8, output, "call-1") != null);
+        const followup = try test_support.websocket_server.readText(socket);
+        self.record(&self.saw_followup_response, std.mem.indexOf(u8, followup, "response.create") != null);
+        try test_support.websocket_server.closeNormallyAndAwaitEcho(socket);
+    }
+
+    fn record(self: *RealtimeScript, field: *bool, value: bool) void {
+        self.mutex.lockUncancelable(self.io);
+        field.* = value;
+        self.mutex.unlock(self.io);
+    }
+};
+
+const RealtimeUiRecorder = struct {
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+    connected: bool = false,
+    text: [128]u8 = undefined,
+    text_len: usize = 0,
+    tool_calls: usize = 0,
+
+    fn callbacks(self: *RealtimeUiRecorder) ai.realtime.session.StateCallbacks {
+        return .{
+            .ctx = self,
+            .on_status = status,
+            .on_messages = messages,
+        };
+    }
+    fn status(raw: ?*anyopaque, value: ai.realtime.RealtimeStatus) void {
+        const self: *RealtimeUiRecorder = @ptrCast(@alignCast(raw.?));
+        self.mutex.lockUncancelable(self.io);
+        self.connected = value == .connected;
+        self.mutex.unlock(self.io);
+    }
+    fn messages(raw: ?*anyopaque, values: []const ai.UIMessage) void {
+        const self: *RealtimeUiRecorder = @ptrCast(@alignCast(raw.?));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (values) |message| for (message.parts) |part| switch (part) {
+            .text => |text| {
+                self.text_len = @min(text.text.len, self.text.len);
+                @memcpy(self.text[0..self.text_len], text.text[0..self.text_len]);
+            },
+            .dynamic_tool => self.tool_calls += 1,
+            else => {},
+        };
+    }
+};
+
+fn autoRealtimeTool(
+    _: ?*anyopaque,
+    _: std.Io,
+    _: std.mem.Allocator,
+    _: ai.realtime.session.ToolCall,
+) anyerror!?std.json.Value {
+    return .{ .string = "tool-ok" };
+}
+
+test "integration realtime session speaks OpenAI JSON over std WebSocket" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var script: RealtimeScript = .{ .io = io };
+    const server = try test_support.WebSocketScriptServer.start(allocator, io, .{
+        .ctx = &script,
+        .run_fn = RealtimeScript.run,
+    });
+    defer server.deinit();
+    var url_buffer: [128]u8 = undefined;
+    const url = server.url(&url_buffer, "/v1/realtime?model=gpt-realtime");
+
+    var http_marker: u8 = 0;
+    var factory = openai.createOpenAi(.{
+        .allocator = allocator,
+        .api_key = "unused",
+        .transport = dummyHttpTransport(&http_marker),
+    });
+    var concrete = try factory.realtimeModel("gpt-realtime", null);
+    var scripted_model: ScriptRealtimeModel = .{ .inner = concrete.realtimeModel(), .url = url };
+    var recorder: RealtimeUiRecorder = .{ .io = io };
+    const session = try ai.RealtimeSession.init(allocator, io, .{
+        .model = scripted_model.model(),
+        .session_config = .{ .output_modalities = &.{.text} },
+        .state_callbacks = recorder.callbacks(),
+        .on_tool_call = .{ .call = autoRealtimeTool },
+    });
+    defer session.dispose();
+
+    try session.connect();
+    try session.sendTextMessage("hello realtime");
+    try server.wait();
+
+    script.mutex.lockUncancelable(io);
+    defer script.mutex.unlock(io);
+    try std.testing.expect(script.saw_session_update);
+    try std.testing.expect(script.saw_text_item);
+    try std.testing.expect(script.saw_tool_output);
+    try std.testing.expect(script.saw_followup_response);
+    recorder.mutex.lockUncancelable(io);
+    defer recorder.mutex.unlock(io);
+    try std.testing.expectEqualStrings("Hello realtime", recorder.text[0..recorder.text_len]);
+    try std.testing.expect(recorder.tool_calls >= 1);
+}
+
+const TranscriptionScript = struct {
+    append_count: usize = 0,
+    saw_session: bool = false,
+
+    fn run(
+        raw: ?*anyopaque,
+        _: std.Io,
+        socket: *std.http.Server.WebSocket,
+        _: *std.http.Server.Request,
+    ) anyerror!void {
+        const self: *TranscriptionScript = @ptrCast(@alignCast(raw.?));
+        const session = try test_support.websocket_server.readText(socket);
+        self.saw_session = std.mem.indexOf(u8, session, "\"type\":\"session.update\"") != null and
+            std.mem.indexOf(u8, session, "gpt-realtime-whisper") != null;
+        while (true) {
+            const message = try test_support.websocket_server.readText(socket);
+            if (std.mem.indexOf(u8, message, "input_audio_buffer.append") != null) {
+                self.append_count += 1;
+                continue;
+            }
+            if (std.mem.indexOf(u8, message, "input_audio_buffer.commit") != null) break;
+        }
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"item_id\":\"item-1\",\"delta\":\"Hel\"}");
+        try test_support.websocket_server.sendJson(socket, "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"item_id\":\"item-1\",\"transcript\":\"Hello\"}");
+        _ = socket.readSmallMessage() catch |err| {
+            if (err != error.ConnectionClose) return err;
+        };
+        try test_support.websocket_server.closeNormally(socket);
+    }
+};
+
+const IntegrationAudioStream = struct {
+    chunks: []const provider.BinaryData,
+    index: usize = 0,
+    deinitialized: bool = false,
+
+    fn stream(self: *IntegrationAudioStream) provider.transcription_model.AudioStream {
+        return .{ .ctx = self, .vtable = &.{ .next = next, .deinit = deinit } };
+    }
+    fn next(raw: *anyopaque, _: std.Io) provider.transcription_model.NextError!?provider.BinaryData {
+        const self: *IntegrationAudioStream = @ptrCast(@alignCast(raw));
+        if (self.index == self.chunks.len) return null;
+        defer self.index += 1;
+        return self.chunks[self.index];
+    }
+    fn deinit(raw: *anyopaque, _: std.Io) void {
+        const self: *IntegrationAudioStream = @ptrCast(@alignCast(raw));
+        self.deinitialized = true;
+    }
+};
+
+test "integration streamTranscribe uses OpenAI realtime WebSocket" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var script: TranscriptionScript = .{};
+    const server = try test_support.WebSocketScriptServer.start(allocator, io, .{
+        .ctx = &script,
+        .run_fn = TranscriptionScript.run,
+    });
+    defer server.deinit();
+    var base_buffer: [96]u8 = undefined;
+    const ws_url = server.url(&base_buffer, "");
+    const http_base = try std.fmt.allocPrint(allocator, "http://{s}", .{ws_url["ws://".len..]});
+    defer allocator.free(http_base);
+
+    var http_marker: u8 = 0;
+    var factory = openai.createOpenAi(.{
+        .allocator = allocator,
+        .base_url = http_base,
+        .api_key = "test-api-key",
+        .transport = dummyHttpTransport(&http_marker),
+    });
+    var concrete = try factory.transcriptionModel("gpt-realtime-whisper", null);
+    const chunks = [_]provider.BinaryData{
+        .{ .bytes = &.{ 1, 2, 3 } },
+        .{ .base64 = "BAUG" },
+    };
+    var audio_stream: IntegrationAudioStream = .{ .chunks = &chunks };
+    var result = try ai.streamTranscribe(io, allocator, .{
+        .model = .{ .model = concrete.transcriptionModel() },
+        .audio = audio_stream.stream(),
+        .input_audio_format = .{ .type = "audio/pcm", .rate = 24_000 },
+    });
+    defer result.deinit(io);
+    var full = result.fullStream();
+    try std.testing.expectEqualStrings("Hel", (try full.next(io)).?.transcript_delta.delta);
+    try std.testing.expectEqualStrings("Hello", (try full.next(io)).?.transcript_final.text);
+    try std.testing.expectEqual(null, try full.next(io));
+    try std.testing.expectEqualStrings("Hello", try result.text(io));
+    try server.wait();
+    try std.testing.expect(script.saw_session);
+    try std.testing.expectEqual(2, script.append_count);
+}
+
+const LiveRealtimeRecorder = struct {
+    io: std.Io,
+    connected: std.Io.Event = .unset,
+    done: std.Io.Event = .unset,
+    text_deltas: std.atomic.Value(usize) = .init(0),
+    response_done: std.atomic.Value(bool) = .init(false),
+    mutex: std.Io.Mutex = .init,
+    last_error: ?anyerror = null,
+
+    fn stateCallbacks(self: *LiveRealtimeRecorder) ai.realtime.session.StateCallbacks {
+        return .{ .ctx = self, .on_status = status };
+    }
+    fn status(raw: ?*anyopaque, value: ai.realtime.RealtimeStatus) void {
+        const self: *LiveRealtimeRecorder = @ptrCast(@alignCast(raw.?));
+        if (value == .connected) self.connected.set(self.io);
+    }
+    fn event(raw: ?*anyopaque, value: provider.ServerEvent) void {
+        const self: *LiveRealtimeRecorder = @ptrCast(@alignCast(raw.?));
+        switch (value) {
+            .text_delta => _ = self.text_deltas.fetchAdd(1, .monotonic),
+            .response_done => {
+                self.response_done.store(true, .release);
+                self.done.set(self.io);
+            },
+            .err => {
+                self.setError(error.APICallError);
+                self.done.set(self.io);
+            },
+            else => {},
+        }
+    }
+    fn onError(raw: ?*anyopaque, info: ai.realtime.session.ErrorInfo) void {
+        const self: *LiveRealtimeRecorder = @ptrCast(@alignCast(raw.?));
+        self.setError(info.err);
+        self.done.set(self.io);
+    }
+    fn setError(self: *LiveRealtimeRecorder, err: anyerror) void {
+        self.mutex.lockUncancelable(self.io);
+        self.last_error = err;
+        self.mutex.unlock(self.io);
+    }
+    fn getError(self: *LiveRealtimeRecorder) ?anyerror {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.last_error;
+    }
+};
+
+test "live OpenAI realtime text smoke" {
+    if (!build_options.live) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const env_file = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "/home/autark/src/rctr/.env",
+        allocator,
+        .limited(1024 * 1024),
+    ) catch return error.SkipZigTest;
+    defer allocator.free(env_file);
+    const api_key = exportEnvValue(env_file, "OPENAI_API_KEY") orelse return error.SkipZigTest;
+
+    var client = provider_utils.HttpClientTransport.init(allocator, io);
+    defer client.deinit();
+    var factory = openai.createOpenAi(.{
+        .allocator = allocator,
+        .api_key = api_key,
+        .transport = client.transport(),
+    });
+    const model_id = "gpt-realtime";
+    var model = try factory.realtimeModel(model_id, null);
+    var recorder: LiveRealtimeRecorder = .{ .io = io };
+    const session = try ai.RealtimeSession.init(allocator, io, .{
+        .model = model.realtimeModel(),
+        .session_config = .{ .output_modalities = &.{.text} },
+        .state_callbacks = recorder.stateCallbacks(),
+        .on_event = .{ .ctx = &recorder, .call = LiveRealtimeRecorder.event },
+        .on_error = .{ .ctx = &recorder, .call = LiveRealtimeRecorder.onError },
+    });
+    defer session.dispose();
+    try session.connect();
+    try recorder.connected.waitTimeout(io, .{ .duration = .{
+        .raw = .fromSeconds(30),
+        .clock = .awake,
+    } });
+    try session.sendTextMessage("Reply with exactly: hello");
+    try recorder.done.waitTimeout(io, .{ .duration = .{
+        .raw = .fromSeconds(45),
+        .clock = .awake,
+    } });
+    if (recorder.getError()) |err| return err;
+    try std.testing.expect(recorder.text_deltas.load(.acquire) >= 1);
+    try std.testing.expect(recorder.response_done.load(.acquire));
+    std.debug.print("live OpenAI realtime: model={s} text_deltas={d} response_done=true\n", .{
+        model_id,
+        recorder.text_deltas.load(.acquire),
+    });
+}

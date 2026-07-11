@@ -110,6 +110,13 @@ pub const DownloadOptions = download_api.Options;
 pub const DownloadResult = download_api.Result;
 pub const validateDownloadUrl = download_api.validateDownloadUrl;
 pub const download = download_api.download;
+pub const websocket = @import("websocket.zig");
+pub const WebSocketFactory = websocket.WebSocketFactory;
+pub const WebSocketLike = websocket.WebSocketLike;
+pub const WebSocketMessage = websocket.Message;
+pub const WebSocketMessageKind = websocket.MessageKind;
+pub const WebSocketConnectOptions = websocket.ConnectOptions;
+pub const defaultWebSocketFactory = websocket.default_factory;
 
 comptime {
     _ = one_shot.OneShot;
@@ -132,6 +139,7 @@ comptime {
     _ = api.postJsonToApi;
     _ = api.postFormDataToApi;
     _ = download_api.download;
+    _ = websocket.WebSocketFactory;
 }
 
 test "module declarations" {

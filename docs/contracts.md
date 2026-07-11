@@ -97,6 +97,26 @@ hostname that *resolves* to a private address is not caught at this layer
 (DNS-rebinding defense is an open item). Tests may opt in to loopback via
 `allow_private_networks`.
 
+## Realtime sessions
+
+- The host-provided `RealtimeAudio` vtable owns playback lifetime.
+  `is_playing` becomes true when audio is handed to `play` and becomes
+  false only on explicit `stopPlayback` or a server `speech_started`
+  barge-in. The core has no playback-completion callback and does not
+  automatically clear `is_playing` when host playback finishes.
+- `dispose()` is idempotent and safe from session callbacks (deferred and
+  executed by the dispatcher) and from foreign threads (lifecycle CAS
+  `active → disposing → disposed`; exactly one winner tears down after all
+  active calls quiesce; losers are no-ops). Tool handlers that complete
+  after disposal have their outputs dropped safely.
+- A failed gated `response.create` retains tool-readiness state and
+  surfaces through `on_error`; a later readiness trigger (e.g. a redundant
+  `response.done`) retries, and an in-flight claim prevents duplicate
+  concurrent sends.
+- The WebSocket client requires real concurrency (`io.concurrent`) for its
+  receive/keepalive tasks — construction fails under a single-threaded Io
+  rather than degrading.
+
 ## C ABI (preview) lifetimes
 
 - Stream parts returned by `ai_stream_next` **borrow a per-stream scratch

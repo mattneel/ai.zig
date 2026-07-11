@@ -28,7 +28,7 @@ and Python bindings.
 | Media (image / speech / transcribe / video) | beta | OpenAI speech→transcribe round trip | — | — |
 | Providers: anthropic, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream | via generate/stream |
 | **C ABI + Python bindings** | **preview** (pending ABI v1) | Anthropic | — | — |
-| Realtime / WebSocket | planned | — | — | — |
+| Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — |
 | Rust bindings | planned | — | — | — |
 
 *Table dated 2026-07-11; live rows name the endpoints actually exercised by

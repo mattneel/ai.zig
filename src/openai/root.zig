@@ -24,6 +24,7 @@ pub const EmbeddingModel = @import("embedding_model.zig").EmbeddingModel;
 pub const ImageModel = @import("image_model.zig").ImageModel;
 pub const SpeechModel = @import("speech_model.zig").SpeechModel;
 pub const TranscriptionModel = @import("transcription_model.zig").TranscriptionModel;
+pub const RealtimeModel = @import("realtime_model.zig").RealtimeModel;
 
 const Allocator = std.mem.Allocator;
 
@@ -87,6 +88,14 @@ pub const OpenAi = struct {
         return TranscriptionModel.init(model_id, self.modelConfig(), diag);
     }
 
+    pub fn realtimeModel(
+        self: *const OpenAi,
+        model_id: []const u8,
+        diag: ?*provider.Diagnostics,
+    ) provider.Error!RealtimeModel {
+        return RealtimeModel.init(model_id, self.modelConfig(), diag);
+    }
+
     /// Builds a Provider V4 adapter whose model objects live in `arena`.
     /// The adapter itself must remain at a stable address while its fat pointer
     /// is in use, matching every other provider context in this repository.
@@ -104,6 +113,7 @@ pub const OpenAi = struct {
             .env = self.settings.env,
             .headers = self.settings.headers,
             .transport = self.settings.transport,
+            .websocket_factory = self.settings.websocket_factory,
             .provider_name = self.settings.name,
             .provider_options_name = providerOptionsName(self.settings.name),
         };
@@ -227,10 +237,12 @@ test "OpenAI factory normalizes base URL, provider ids, namespaces, and Provider
     var responses = try factory.languageModel("gpt-4o-mini", null);
     var chat = try factory.chat("gpt-4o-mini", null);
     var embedding = try factory.embeddingModel("text-embedding-3-small", null);
+    var realtime = try factory.realtimeModel("gpt-realtime", null);
     try std.testing.expectEqualStrings("https://proxy.example/v1", factory.base_url);
     try std.testing.expectEqualStrings("custom.openai.responses", responses.languageModel().provider());
     try std.testing.expectEqualStrings("custom.openai.chat", chat.languageModel().provider());
     try std.testing.expectEqualStrings("custom.openai.embedding", embedding.embeddingModel().provider());
+    try std.testing.expectEqualStrings("custom.openai.realtime", realtime.realtimeModel().provider());
     try std.testing.expectEqualStrings("custom", responses.config.provider_options_name);
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -6,9 +6,10 @@ first providers `d1849c6`, ai core `7989891`+`e3a4d3f`, streaming
 `91fd9f5`+`13ae77c`, C ABI + Python `d881a1f`, structured output/embeddings
 `13d66cc`, agent + OpenAI `2b7c919`+`5b5b7bf`. Phases 4, 5, and 8 shipped as
 a/b task pairs. Phase 9 (UI message stream + Chat `6c2316f`, MCP `763ad27`)
-and Phase 10 (media `01f82ad`) are also complete. **Next: Phase 11**
-(realtime/WebSocket), then 12 (FFI v1, wrappers, breadth) and 13
-(conformance, contracts, release readiness).
+and Phase 10 (media `01f82ad`) are also complete, as is Phase 11
+(realtime/WebSocket). **Next: the Phase 13 differential conformance
+harness** (per maintainer priority), then Phase 12 (FFI v1, wrappers,
+breadth) and the rest of 13 (contracts hardening, release readiness).
 
 Phased implementation plan. Ordering is forced by the upstream dependency
 spine (`provider` → `provider_utils` → providers → `ai`) plus two
