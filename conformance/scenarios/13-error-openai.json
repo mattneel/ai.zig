@@ -1,0 +1,26 @@
+{
+  "name": "error mapping: 400 provider body — openai chat",
+  "surface": "generateText",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "This request fails." }],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 400,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "error": {
+            "message": "Invalid deterministic request.",
+            "type": "invalid_request_error",
+            "param": "messages",
+            "code": "invalid_value"
+          }
+        }
+      }
+    ]
+  }
+}

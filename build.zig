@@ -85,6 +85,28 @@ pub fn build(b: *std.Build) void {
     openai.addImport("provider", provider);
     openai.addImport("provider_utils", provider_utils);
 
+    const conformance_runner_module = b.createModule(.{
+        .root_source_file = b.path("src/conformance/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    conformance_runner_module.addImport("provider", provider);
+    conformance_runner_module.addImport("provider_utils", provider_utils);
+    conformance_runner_module.addImport("ai", ai);
+    conformance_runner_module.addImport("openai", openai);
+    conformance_runner_module.addImport("anthropic", anthropic);
+    conformance_runner_module.addImport("openai_compatible", openai_compatible);
+    const conformance_runner = b.addExecutable(.{
+        .name = "conformance-runner",
+        .root_module = conformance_runner_module,
+    });
+    const install_conformance_runner = b.addInstallArtifact(conformance_runner, .{});
+    const conformance_runner_step = b.step(
+        "conformance-runner",
+        "Build and install the differential conformance runner",
+    );
+    conformance_runner_step.dependOn(&install_conformance_runner.step);
+
     const mcp = b.addModule("mcp", .{
         .root_source_file = b.path("src/mcp/root.zig"),
         .target = target,

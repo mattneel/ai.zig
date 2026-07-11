@@ -266,11 +266,13 @@ provider conformance fixtures shared across vendors.
 
 ## Phase 13 — Conformance, contracts, release readiness
 
-- **Differential conformance harness**: run identical deterministic
-  fixtures through the pinned upstream TypeScript SDK and ai.zig against a
-  shared fake provider server; capture and normalize outbound HTTP,
-  stream-part sequences, tool messages, finish reasons, usage, and
-  retry decisions; diff; publish a per-surface pass table (this replaces
+- **Differential conformance harness**: ✅ initial harness done 2026-07-11 —
+  14 offline scenarios cover text generation/streaming, tool loops,
+  structured output, embeddings, retry, and provider error mapping. Run
+  identical deterministic fixtures through the pinned upstream TypeScript SDK
+  and ai.zig against a shared fake provider server; capture and normalize
+  outbound HTTP, stream-part sequences, tool messages, finish reasons, usage,
+  and retry decisions; diff; publish a per-surface pass table (this replaces
   raw test counts as the public compatibility claim). Live tests remain a
   separate provider-drift layer with dated model ids.
 - Contracts hardening from docs/contracts.md open items: duplicate

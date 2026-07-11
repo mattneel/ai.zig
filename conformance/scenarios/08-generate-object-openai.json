@@ -1,0 +1,39 @@
+{
+  "name": "generateObject — openai chat (json schema mode)",
+  "surface": "generateObject",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "Return a person." }],
+    "schema": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "schema_name": "person",
+    "schema_description": "A person record.",
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "chatcmpl-object-openai",
+          "created": 1700000000,
+          "model": "gpt-4o-mini",
+          "choices": [
+            {
+              "index": 0,
+              "message": { "role": "assistant", "content": "{\"name\":\"Ada\"}" },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": { "prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12 }
+        }
+      }
+    ]
+  }
+}

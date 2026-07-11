@@ -1,0 +1,25 @@
+{
+  "name": "streamText plain (SSE) — openai chat",
+  "surface": "streamText",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "Stream hello." }],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "sse": [
+          "{\"id\":\"chatcmpl-stream-openai\",\"created\":1700000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello \"}}]}",
+          "{\"id\":\"chatcmpl-stream-openai\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream.\"}}]}",
+          "{\"id\":\"chatcmpl-stream-openai\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+          "{\"id\":\"chatcmpl-stream-openai\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}",
+          "[DONE]"
+        ]
+      }
+    ]
+  }
+}

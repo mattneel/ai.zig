@@ -1,0 +1,44 @@
+{
+  "name": "retry: 429 then 200 — openai chat",
+  "surface": "generateText",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "Retry once." }],
+    "settings": { "maxRetries": 1 }
+  },
+  "comparison": { "requests": "count-and-order" },
+  "server": {
+    "responses": [
+      {
+        "status": 429,
+        "headers": { "content-type": "application/json", "retry-after": "0" },
+        "body": {
+          "error": {
+            "message": "Rate limit for deterministic retry fixture.",
+            "type": "rate_limit_error",
+            "param": null,
+            "code": "rate_limit_exceeded"
+          }
+        }
+      },
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "chatcmpl-retry-openai",
+          "created": 1700000000,
+          "model": "gpt-4o-mini",
+          "choices": [
+            {
+              "index": 0,
+              "message": { "role": "assistant", "content": "Retry succeeded." },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 }
+        }
+      }
+    ]
+  }
+}

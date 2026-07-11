@@ -1,0 +1,22 @@
+{
+  "name": "ai-zig-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "conformance": "node run.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.12",
+    "@ai-sdk/openai": "4.0.11",
+    "@ai-sdk/openai-compatible": "3.0.7",
+    "@ai-sdk/provider": "4.0.3",
+    "@ai-sdk/provider-utils": "5.0.7",
+    "ai": "7.0.22",
+    "zod": "3.25.76"
+  }
+}

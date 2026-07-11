@@ -74,3 +74,47 @@ jobs:
 
       - name: Check formatting
         run: zig fmt --check build.zig src
+
+  conformance:
+    name: Differential conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: conformance/package-lock.json
+
+      - name: Install pinned upstream SDK
+        working-directory: conformance
+        run: npm ci
+
+      - name: Build conformance runner
+        run: zig build conformance-runner
+
+      - name: Run differential conformance
+        working-directory: conformance
+        run: npm run conformance
+
+      - name: Publish report to job summary
+        if: always()
+        run: cat conformance/.artifacts/report.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-conformance-report
+          path: |
+            conformance/.artifacts/report.md
+            conformance/.artifacts/report.json
+          if-no-files-found: error

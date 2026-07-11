@@ -1,0 +1,41 @@
+{
+  "name": "generateObject — anthropic",
+  "surface": "generateObject",
+  "provider": "anthropic",
+  "model": "claude-3-haiku-20240307",
+  "input": {
+    "messages": [{ "role": "user", "content": "Return a person." }],
+    "schema": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "msg-object-anthropic",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-3-haiku-20240307",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu-json-anthropic",
+              "name": "json",
+              "input": { "name": "Ada" }
+            }
+          ],
+          "stop_reason": "tool_use",
+          "stop_sequence": null,
+          "usage": { "input_tokens": 8, "output_tokens": 4 }
+        }
+      }
+    ]
+  }
+}

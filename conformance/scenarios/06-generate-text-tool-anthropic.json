@@ -1,0 +1,62 @@
+{
+  "name": "generateText 2-step tool loop — anthropic",
+  "surface": "generateText",
+  "provider": "anthropic",
+  "model": "claude-3-haiku-20240307",
+  "input": {
+    "messages": [{ "role": "user", "content": "What is the weather in Paris?" }],
+    "tools": [
+      {
+        "name": "weather",
+        "description": "Get the weather for a city.",
+        "input_schema": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"],
+          "additionalProperties": false
+        },
+        "output": { "city": "Paris", "temperature": 21, "condition": "sunny" }
+      }
+    ],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "msg-tool-anthropic-1",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-3-haiku-20240307",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu-weather-anthropic",
+              "name": "weather",
+              "input": { "city": "Paris" }
+            }
+          ],
+          "stop_reason": "tool_use",
+          "stop_sequence": null,
+          "usage": { "input_tokens": 7, "output_tokens": 3 }
+        }
+      },
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "msg-tool-anthropic-2",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-3-haiku-20240307",
+          "content": [{ "type": "text", "text": "Paris is sunny and 21 C." }],
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": { "input_tokens": 12, "output_tokens": 6 }
+        }
+      }
+    ]
+  }
+}

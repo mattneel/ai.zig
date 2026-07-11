@@ -1,0 +1,31 @@
+{
+  "name": "generateText plain — openai chat",
+  "surface": "generateText",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "Say hello." }],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "chatcmpl-plain-openai",
+          "created": 1700000000,
+          "model": "gpt-4o-mini",
+          "choices": [
+            {
+              "index": 0,
+              "message": { "role": "assistant", "content": "Hello from OpenAI." },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": { "prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9 }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "generateText plain — anthropic",
+  "surface": "generateText",
+  "provider": "anthropic",
+  "model": "claude-3-haiku-20240307",
+  "input": {
+    "messages": [{ "role": "user", "content": "Say hello." }],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "msg-plain-anthropic",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-3-haiku-20240307",
+          "content": [{ "type": "text", "text": "Hello from Anthropic." }],
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": { "input_tokens": 6, "output_tokens": 4 }
+        }
+      }
+    ]
+  }
+}

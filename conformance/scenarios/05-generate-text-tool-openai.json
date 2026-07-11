@@ -1,0 +1,71 @@
+{
+  "name": "generateText 2-step tool loop — openai chat",
+  "surface": "generateText",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "What is the weather in Paris?" }],
+    "tools": [
+      {
+        "name": "weather",
+        "description": "Get the weather for a city.",
+        "input_schema": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"],
+          "additionalProperties": false
+        },
+        "output": { "city": "Paris", "temperature": 21, "condition": "sunny" }
+      }
+    ],
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "chatcmpl-tool-openai-1",
+          "created": 1700000000,
+          "model": "gpt-4o-mini",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call-weather-openai",
+                    "type": "function",
+                    "function": { "name": "weather", "arguments": "{\"city\":\"Paris\"}" }
+                  }
+                ]
+              },
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": { "prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10 }
+        }
+      },
+      {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": {
+          "id": "chatcmpl-tool-openai-2",
+          "created": 1700000001,
+          "model": "gpt-4o-mini",
+          "choices": [
+            {
+              "index": 0,
+              "message": { "role": "assistant", "content": "Paris is sunny and 21 C." },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": { "prompt_tokens": 12, "completion_tokens": 6, "total_tokens": 18 }
+        }
+      }
+    ]
+  }
+}

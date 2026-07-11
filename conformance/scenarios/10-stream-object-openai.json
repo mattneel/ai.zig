@@ -1,0 +1,33 @@
+{
+  "name": "streamObject — openai chat",
+  "surface": "streamObject",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "input": {
+    "messages": [{ "role": "user", "content": "Return a person." }],
+    "schema": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "schema_name": "person",
+    "schema_description": "A person record.",
+    "settings": { "maxRetries": 0 }
+  },
+  "server": {
+    "responses": [
+      {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "sse": [
+          "{\"id\":\"chatcmpl-stream-object-openai\",\"created\":1700000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"{\\\"name\\\":\"}}]}",
+          "{\"id\":\"chatcmpl-stream-object-openai\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\\"Ada\\\"}\"}}]}",
+          "{\"id\":\"chatcmpl-stream-object-openai\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+          "{\"id\":\"chatcmpl-stream-object-openai\",\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}",
+          "[DONE]"
+        ]
+      }
+    ]
+  }
+}
