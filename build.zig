@@ -87,6 +87,15 @@ pub fn build(b: *std.Build) void {
     });
     test_support.addImport("provider_utils", provider_utils);
 
+    const integration = b.createModule(.{
+        .root_source_file = b.path("src/integration/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    integration.addImport("provider", provider);
+    integration.addImport("provider_utils", provider_utils);
+    integration.addImport("test_support", test_support);
+
     const modules = [_]Module{
         .{ .name = "provider", .test_step = "provider", .module = provider },
         .{ .name = "provider_utils", .test_step = "provider-utils", .module = provider_utils },
@@ -98,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "mcp", .test_step = "mcp", .module = mcp },
         .{ .name = "ffi", .test_step = "ffi", .module = ffi },
         .{ .name = "test_support", .test_step = "support", .module = test_support },
+        .{ .name = "integration", .test_step = "integration", .module = integration },
     };
 
     const test_all = b.step("test", "Run all module tests");

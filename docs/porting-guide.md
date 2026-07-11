@@ -550,3 +550,8 @@ Track every deviation here; anything not listed is a bug.
 13. On the canonical wire, binary payloads (`Uint8Array` positions) serialize
     as base64 strings, matching gateway normalization; JSON octet arrays are
     tolerated on parse.
+14. `JsonEventStream` treats a `data: [DONE]` event as terminal (subsequent
+    `next()` returns null and the connection can be released); upstream's
+    `parseJsonEventStream` merely drops the `[DONE]` chunk and keeps reading
+    until the HTTP stream closes. No known provider emits events after
+    `[DONE]`; terminating is strictly more defensive.
