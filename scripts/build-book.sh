@@ -69,3 +69,8 @@ fi
 
 mdbook build docs/book
 
+if command -v node >/dev/null 2>&1; then
+    node scripts/check-book-highlight.mjs
+else
+    echo "warning: node not found; skipping book syntax-highlighting check" >&2
+fi

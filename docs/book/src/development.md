@@ -101,6 +101,11 @@ The script copies canonical contracts, porting guide, roadmap, and the current
 conformance report into ignored appendix sources before building
 `docs/book/book`. Do not hand-edit generated appendix files.
 
+Zig fences use `docs/book/theme/highlight.js`, a stock mdBook bundle extended
+with this repository's original grammar. Its keywords and builtins derive from
+the tokenizer and `BuiltinFn` tables selected by `zig env`; the Node check runs
+every book snippet and rejects drift from the pinned compiler.
+
 ## Local GitHub Actions checks
 
 `act` can parse and run suitable CI jobs:

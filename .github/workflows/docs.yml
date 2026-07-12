@@ -77,6 +77,9 @@ jobs:
       - name: Build documentation
         run: bash scripts/build-book.sh
 
+      - name: Verify syntax highlighting
+        run: node scripts/check-book-highlight.mjs
+
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

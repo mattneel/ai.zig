@@ -11,6 +11,7 @@ build-dir = "book"
 git-repository-url = "https://github.com/mattneel/ai.zig"
 edit-url-template = "https://github.com/mattneel/ai.zig/edit/master/docs/book/{path}"
 site-url = "/ai.zig/"
+hash-files = false
 
 [output.html.search]
 enable = true
