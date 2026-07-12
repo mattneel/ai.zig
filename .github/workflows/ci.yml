@@ -2,6 +2,7 @@
 #   act push -j fmt
 #   act push -j python
 #   act push -j rust
+#   act push -j abi-compat
 #   act push -j test --matrix os:ubuntu-latest
 
 name: CI
@@ -105,6 +106,21 @@ jobs:
 
       - name: Check formatting
         run: zig fmt --check build.zig src
+
+  abi-compat:
+    name: ABI compatibility (latest release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Check latest released C clients against current library
+        run: bash scripts/check-release-abi.sh
 
   python:
     name: Python bindings

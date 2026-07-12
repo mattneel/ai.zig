@@ -1,5 +1,6 @@
 .zig-cache/
 zig-cache/
+zig-pkg/
 .zig-out/
 zig-out/
 __pycache__/
@@ -11,3 +12,6 @@ docs/book/src/appendix/contracts.md
 docs/book/src/appendix/porting-guide.md
 docs/book/src/appendix/roadmap.md
 docs/book/src/appendix/conformance-report.md
+dist/
+bindings/python/dist/
+bindings/python/*.egg-info/

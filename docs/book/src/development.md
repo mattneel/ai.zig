@@ -135,6 +135,16 @@ differential conformance. The docs workflow reruns conformance, builds this
 book, uploads the Pages artifact, and deploys only from `master` or manual
 dispatch.
 
+## Release process
+
+A reviewer-created `v*` tag starts the release workflow: it re-runs the Zig
+test gate, uses `scripts/package-release.sh` to cross-compile and archive all
+six C targets plus the pruned Zig package and unpublished Python sdist, records
+the Zig package hash and SHA-256 checksums, then creates a GitHub Release from
+the matching CHANGELOG section. Manual dispatch performs the same build and
+packaging dry run but deliberately skips release creation; `act` can parse and
+exercise the local jobs but cannot create the GitHub Release.
+
 ## Fidelity discipline
 
 Read the upstream implementation and tests before porting. Preserve canonical

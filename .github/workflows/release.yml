@@ -1,0 +1,117 @@
+# `act` can parse and run the gate/package jobs. GitHub Release creation uses
+# GitHub's release service and cannot be exercised under `act`.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      # This is a fast re-verification of the release commit. The full
+      # six-platform matrix already runs for each branch push in ci.yml.
+      - name: Run release gate
+        run: zig build test --summary all
+
+  package:
+    name: Package
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python build frontend
+        run: python -m pip install build
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version=$(awk -F'"' '/^[[:space:]]*\.version = "/ { print $2; exit }' build.zig.zon)
+          fi
+          echo "version=${version#v}" >>"$GITHUB_OUTPUT"
+          echo "release_ref=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Build and package release assets
+        run: >-
+          bash scripts/package-release.sh
+          --version "${{ steps.version.outputs.release_ref }}"
+          --output dist
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    if: github.event_name != 'workflow_dispatch'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ needs.package.outputs.version }}
+          path: dist
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          bash scripts/extract-changelog-section.sh "$version" CHANGELOG.md >release-notes.md
+
+      # This step intentionally has no local `act` equivalent.
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}" dist/*
+          --repo "${GITHUB_REPOSITORY}"
+          --verify-tag
+          --title "ai.zig ${GITHUB_REF_NAME}"
+          --notes-file release-notes.md

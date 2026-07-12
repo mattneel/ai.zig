@@ -204,7 +204,12 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_artifact,
     });
     ffi_static.bundle_compiler_rt = true;
-    const install_ffi_static = b.addInstallArtifact(ffi_static, .{});
+    const install_ffi_static = b.addInstallArtifact(ffi_static, .{
+        // COFF uses ai.lib for both a static library and a DLL import library.
+        // Keep the import library at its platform name and install the static
+        // archive under the cross-platform release name instead.
+        .dest_sub_path = if (target.result.os.tag == .windows) "libai.a" else null,
+    });
 
     const header_smoke_module = b.createModule(.{
         .target = target,

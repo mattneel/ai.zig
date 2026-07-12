@@ -54,9 +54,10 @@ test count.
 
 The C ABI v1 policy is implemented and enforced in-tree: version queries,
 frozen numeric tags, size-prefixed extensible structs, symbol visibility,
-the ELF SONAME, and a frozen snapshot client are tested. Cross-release checks
-against tagged artifacts begin with the first tagged release. That tagged
-artifact matrix is therefore deferred, not claimed as existing evidence.
+the ELF SONAME, and a frozen snapshot client are tested. The `abi-compat` CI
+job checks the latest published release's header and frozen clients against the
+current library. It reports a clean skip while no release exists, so
+cross-release evidence begins only after v0.1.0 is published.
 
 The Python and Rust packages cover the ABI v1 surfaces documented in their
 chapters, but neither package is published yet. Their language-level APIs

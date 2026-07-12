@@ -110,10 +110,11 @@ The ABI test suite does more than compile the current header against the
 current library. `src/ffi/abi_v1_snapshot_client.c` intentionally does not
 include `ai.h`; it carries frozen v1 declarations, checks version
 `0x01000000`, creates a runtime and OpenAI provider, and links/runs against the
-new library. Tagged artifacts join the compatibility matrix after the first
-tagged release; that cross-release evidence is not claimed yet.
+new library. The `abi-compat` CI job also fetches the latest published pruned
+source archive and compiles that release's header and frozen clients against
+the current library. It skips cleanly before the first release exists and
+starts producing cross-release evidence after v0.1.0 is published.
 
 C ABI v1 currently exposes Anthropic, OpenRouter, generic OpenAI-compatible,
 native OpenAI, and xAI provider constructors. Native Google remains pending.
 Video, realtime, MCP, and streaming transcription are not ABI v1 surfaces.
-

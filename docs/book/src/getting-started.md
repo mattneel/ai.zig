@@ -17,15 +17,30 @@ may use anyzig or install Zig 0.16.0 directly. `zig env` identifies the exact
 compiler and its `std_dir`; for Zig 0.16's new I/O APIs, that standard-library
 source is the authoritative reference.
 
-No ai.zig release tag or package-index publication is available yet. Fetch a
-reviewed revision. Fetching the master archive is convenient during beta;
-Zig writes a content hash into `build.zig.zon`, so later builds remain pinned
-until the dependency is deliberately refreshed:
+The packages are not published to package indexes. Once the reviewer publishes
+v0.1.0, prefer its pruned source asset; it contains exactly the package paths
+declared by `build.zig.zon`:
+
+```sh
+zig fetch --save=ai_zig \
+  https://github.com/mattneel/ai.zig/releases/download/v0.1.0/ai_zig-0.1.0.tar.gz
+```
+
+Before that asset exists, or when deliberately following development, the
+master archive remains the secondary beta option. Zig writes a content hash
+into `build.zig.zon`, so later builds remain pinned until the dependency is
+deliberately refreshed:
 
 ```sh
 zig fetch --save=ai_zig \
   https://github.com/mattneel/ai.zig/archive/refs/heads/master.tar.gz
 ```
+
+The [v0.1.0 release page](https://github.com/mattneel/ai.zig/releases/tag/v0.1.0)
+also carries `ai-0.1.0-<target>` archives for x86_64 and arm64 Linux, macOS,
+and Windows. Each archive contains the platform C libraries, `include/ai.h`,
+and the license, notice, and README files; these are separate from the
+unpublished Python and Rust wrapper packages.
 
 ## Wire the modules into `build.zig`
 
@@ -135,4 +150,3 @@ applications that want provider-side named lookups can instead inject
 
 Next, read [Text Generation & Streaming](text-generation.md) for the pull
 stream and [Tools & Tool Loops](tools.md) for multi-step calls.
-

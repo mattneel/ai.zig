@@ -295,6 +295,12 @@ live realtime smoke test.
 wrapper test suites in CI; a third-party-style example app per wrapper;
 provider conformance fixtures shared across vendors.
 
+- **2026-07-12 release preparation:** the tag-triggered packaging/release
+  workflow and latest-published-release `abi-compat` CI job have landed. The
+  compatibility job skips cleanly while no release exists and activates when
+  v0.1.0 is published. Keep this acceptance item open until that published
+  artifact has actually passed the job.
+
 ## Phase 13 — Conformance, contracts, release readiness
 
 - **Differential conformance harness**: ✅ initial harness done 2026-07-11 —

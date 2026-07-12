@@ -42,17 +42,28 @@ gate; see [docs/roadmap.md](docs/roadmap.md) for per-phase acceptance and
 **Stability vocabulary:** `beta` means implemented and covered by the full test suite, but the Zig API
 may still change. `preview` means narrower coverage and no compatibility guarantee.
 
-The [**C ABI v1 policy**](https://mattneel.github.io/ai.zig/c-abi.html) is implemented and enforced in-tree;
-cross-release verification against tagged artifacts begins with the first tagged release. The Python
-and Rust packages wrap every ABI v1 surface listed in the table and run offline integration suites in
-CI, but neither is published; their language-level APIs remain preview while packaging and downstream feedback settle.
+The [**C ABI v1 policy**](https://mattneel.github.io/ai.zig/c-abi.html) is implemented and enforced in-tree.
+The `abi-compat` CI job downloads the latest published release and compiles its C header and frozen clients
+against the current library; before the first release exists, that job reports a clean skip. The Python and
+Rust packages wrap every ABI v1 surface listed in the table and run offline integration suites in CI, but
+neither is published to a package index; their language-level APIs remain preview while packaging and downstream feedback settle.
 
 GitHub Actions runs the full test suite on Linux, macOS, and Windows across x86_64 and arm64 (six
 runners), plus formatting, Python-wrapper, Rust-wrapper, and differential-conformance jobs; Windows FFI artifacts target MinGW.
 
 ## Installing
 
-Not yet published to a package index. Consume it as a Zig package from a checkout (or your fork):
+ai.zig and its wrappers are not yet published to package indexes. Once the
+reviewed v0.1.0 release is published, prefer its pruned Zig source asset:
+
+```sh
+zig fetch --save=ai_zig \
+  https://github.com/mattneel/ai.zig/releases/download/v0.1.0/ai_zig-0.1.0.tar.gz
+```
+
+The same [v0.1.0 release](https://github.com/mattneel/ai.zig/releases/tag/v0.1.0)
+provides six per-target C library archives. Until those reviewer-created
+release assets exist, consume the package from a checkout (or your fork):
 
 ```zig
 // build.zig.zon
