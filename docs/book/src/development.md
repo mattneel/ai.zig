@@ -4,6 +4,20 @@ Development follows the dependency spine `provider → provider_utils →
 providers → ai`, with streaming, concurrency, diagnostics, and FFI treated as
 core behavior rather than optional follow-up work.
 
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `src/` | the implementation (one directory per module) |
+| `include/ai.h` | the hand-written C ABI header (ABI-locked by test) |
+| `bindings/python/` | the `ai_zig` ctypes package + pytest suite |
+| `bindings/rust/` | the `ai-sys` declarations + safe `ai` wrapper workspace |
+| `inspiration/` | vendored Vercel AI SDK monorepo — **read-only** reference |
+| `docs/porting-guide.md` | TS→Zig mapping + the fidelity ledger |
+| `docs/contracts.md` | behavioral contracts, lifetimes, known sharp edges |
+| `docs/roadmap.md` | phased plan, acceptance criteria, completion status |
+| `docs/research/` | deep research reports + working Zig 0.16 prototypes |
+
 ## Build and tests
 
 ```sh

@@ -43,6 +43,9 @@ replace the default with `ai.setDefaultProvider`, call
 `ai.useOpenRouterDefault` explicitly, or compile the built-in path out with
 `-Ddefault-openrouter=false`.
 
+That no-default path is covered by a test: a bare id returns
+`LoadAPIKeyError`, not a request.
+
 This matters for trust and billing. A string such as
 `"anthropic/claude-..."` names an OpenRouter route when the OpenRouter default
 resolves it; it does not contact Anthropic directly. Construct the native
@@ -62,4 +65,3 @@ defaults; provider errors still flow through the common diagnostic taxonomy.
 The status table distinguishes this implementation coverage from dated live
 evidence. Do not infer that every routed provider/model pair has been
 live-tested from the wrapper's beta status.
-

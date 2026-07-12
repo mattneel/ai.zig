@@ -78,6 +78,65 @@ completion order. A thrown tool error becomes a `tool_error` output and is fed
 back to the model rather than canceling sibling tools. Model retries never
 retry tool code.
 
+## Complete Anthropic tool loop
+
+A tool-enabled call that can complete in two model steps — the model requests
+the tool, ai.zig executes it, and the model incorporates the result:
+
+```zig
+const std = @import("std");
+const ai = @import("ai");
+const anthropic = @import("anthropic");
+const provider_utils = @import("provider_utils");
+
+const Weather = struct {
+    fn execute(
+        _: ?*anyopaque,
+        _: std.Io,
+        arena: std.mem.Allocator,
+        input: std.json.Value,
+        _: ai.tool.ToolExecutionOptions,
+    ) anyerror!ai.tool.ToolOutput {
+        _ = input; // {"city": "..."} — validated against the schema below
+        var output: std.json.ObjectMap = .empty;
+        try output.put(arena, "condition", .{ .string = "sunny" });
+        try output.put(arena, "temperature", .{ .integer = 21 });
+        return .{ .value = .{ .object = output } };
+    }
+};
+
+pub fn run(io: std.Io, gpa: std.mem.Allocator, api_key: []const u8) !void {
+    var transport = provider_utils.HttpClientTransport.init(gpa, io);
+    defer transport.deinit();
+
+    const factory = try anthropic.createAnthropic(.{
+        .api_key = api_key, // keys are always explicit — nothing reads your env
+        .transport = transport.transport(),
+    });
+    var chat = try factory.messages("claude-haiku-4-5-20251001", null);
+
+    const tools = [_]ai.NamedTool{.{
+        .name = "weather",
+        .tool = .{
+            .description = .{ .text = "Get the weather for a city" },
+            .input_schema = provider_utils.schemaFromType(struct { city: []const u8 }),
+            .execute = .{ .ctx = null, .execute_fn = Weather.execute },
+        },
+    }};
+
+    var result = try ai.generateText(io, gpa, .{
+        .model = .{ .model = chat.languageModel() },
+        .prompt = .{ .text = "What is the weather in Paris?" },
+        .tools = &tools,
+        .stop_when = &.{ai.stepCount(5)},
+    });
+    defer result.deinit();
+
+    std.debug.print("{s}\n", .{result.text()});
+    // The result also exposes steps, usage, messages, and resolved model metadata.
+}
+```
+
 ## Approvals
 
 Approval is implemented for function tools. `needs_approval` can be `.no`,
@@ -98,4 +157,3 @@ Approval parts are available in both blocking result content and streaming
 parts, and the UI-message reducer carries the approval lifecycle. Realtime
 tool calls use a separate all-outputs-ready gate described in
 [Realtime & WebSocket](realtime.md#tool-gating-and-barge-in).
-

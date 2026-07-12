@@ -29,6 +29,27 @@ absolute shared-library path when loading from elsewhere.
 Google construction, video, realtime, MCP, and streaming transcription are
 not C ABI v1 surfaces and therefore are not in this wrapper.
 
+## Blocking OpenAI-compatible example
+
+```python
+from ai_zig import Runtime, Tool, generate_text, openai_compatible
+
+with Runtime() as runtime:
+    with openai_compatible(runtime, name="local",
+                           base_url="http://127.0.0.1:8000/v1",
+                           api_key="explicit-key") as provider:
+        with provider.language_model("model-id") as model:
+            weather = Tool("weather", lambda args: {"temperature": 21})
+            result = generate_text(model, prompt="Weather in Paris?",
+                                   tools=[weather], max_steps=2)
+            print(result["text"])
+```
+
+The tool lambda runs *inside* the Zig loop via a C callback; `stream_text`
+returns an iterator whose `cancel()` unblocks a waiting pull from any thread.
+The callback, cancellation, and lifetime rules are normative in
+[Behavioral Contracts](../appendix/contracts.md).
+
 ## Streaming tool example
 
 This runnable pattern mirrors `examples/python/chat.py` while keeping the
@@ -111,4 +132,3 @@ Offline tests run an in-process canned HTTP/SSE server and exercise callback,
 stream, media, object, embedding, telemetry, and ownership behavior without
 provider cost. The live test uses the dated Anthropic Haiku model and skips
 when the key is absent.
-

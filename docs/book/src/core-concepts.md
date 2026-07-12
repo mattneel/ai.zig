@@ -4,6 +4,23 @@ ai.zig keeps the upstream mental model while making execution, allocation,
 and failure detail explicit. The same four rules recur across providers,
 orchestration, realtime, MCP, and the C ABI.
 
+## Module responsibilities
+
+- **`provider`** — the V4 specification: model vtables, the 21-tag
+  stream-part union, prompt/content types, usage, errors + diagnostics,
+  and the canonical JSON wire codec (comptime-exhaustive tag tables).
+- **`provider_utils`** — `HttpTransport` over `std.http.Client`, WHATWG SSE
+  decoder, retry engine, partial-JSON repair, schema abstraction,
+  multipart encoder, SSRF-guarded downloads.
+- **`ai`** — generate/stream text and objects, agent, prompt conversion,
+  registry, middleware, telemetry, the streaming pipeline (Broadcast part
+  log + stitchable multi-step stream over `Io.Queue`), UI message stream +
+  Chat, media orchestration.
+- **`mcp`** — JSON-RPC client, stdio/SSE/streamable-HTTP transports, MCP
+  tools bridged into the tool loop.
+- **`ffi`** — opaque handles, `enum(c_int)` statuses, pull-based stream
+  iteration with borrow-until-next-call parts, callback tools.
+
 ## `std.Io` is an explicit capability
 
 Zig 0.16 passes `std.Io` by value, like `std.mem.Allocator`. Public operations
@@ -19,6 +36,17 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
+`io.async`/`Future.cancel` give structured concurrency where cancelable I/O
+operations report `error.Canceled` at well-defined points; `Io.Queue(T)` is an
+MPMC channel with suspend-based backpressure — a natural analog of the SDK's
+`ReadableStream` pipelines. `std.http.Client`, TLS 1.2/1.3, and `std.json` are
+stdlib-provided and `Io`-integrated. Code written against `std.Io` today
+(threaded backend) is positioned to use future evented/io_uring backends with
+little or no public API change. For the implemented HTTP- and WebSocket-based
+surfaces, streaming, concurrency, cancellation, and networking are native
+rather than blocking-only shims — a blocking-only port would have been a
+failed port.
+
 `HttpClientTransport.init(gpa, io)` owns a `std.http.Client` and exposes the
 type-erased `provider_utils.HttpTransport` vtable providers consume. The
 transport, provider model, and orchestration call all receive the same I/O
@@ -31,6 +59,12 @@ an explicitly documented inline degradation for some operations. The
 WebSocket client is different: it requires real concurrency for receive and
 keepalive tasks and reports `ConcurrencyUnavailable` rather than pretending a
 blocking-only transport is equivalent.
+
+Cancellation is layered, and the layers differ (see
+[Behavioral Contracts](appendix/contracts.md)): unblocking a waiting `next()`
+is immediate; in-flight I/O cancels at its next cancellation point; **user tool
+code is cooperative** — a timeout or cancel unblocks the SDK caller but cannot
+preempt arbitrary callback code still running.
 
 ## Allocators and arenas
 
@@ -121,4 +155,3 @@ execution is never retried by this engine; model calls are.
 
 See the normative [Behavioral Contracts](appendix/contracts.md) for stream
 retention, cancellation layers, approval signatures, and ownership edges.
-
