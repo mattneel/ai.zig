@@ -1,15 +1,15 @@
 # Roadmap
 
-**Status (2026-07-11):** Phases 0–8 are **complete** and live-validated —
+**Status (2026-07-12):** Phases 0–8 are **complete** and live-validated —
 foundations `e32142e`, provider spec `f8b8dba`, provider_utils `98a1619`,
 first providers `d1849c6`, ai core `7989891`+`e3a4d3f`, streaming
 `91fd9f5`+`13ae77c`, C ABI + Python `d881a1f`, structured output/embeddings
 `13d66cc`, agent + OpenAI `2b7c919`+`5b5b7bf`. Phases 4, 5, and 8 shipped as
 a/b task pairs. Phase 9 (UI message stream + Chat `6c2316f`, MCP `763ad27`)
-and Phase 10 (media `01f82ad`) are also complete, as is Phase 11
-(realtime/WebSocket). **Next: the Phase 13 differential conformance
-harness** (per maintainer priority), then Phase 12 (FFI v1, wrappers,
-breadth) and the rest of 13 (contracts hardening, release readiness).
+and Phase 10 (media `01f82ad`) are also complete, as are Phase 11
+(realtime/WebSocket) and Phase 12 (FFI v1, wrappers, breadth, and
+cross-release ABI verification). **Next: the remaining Phase 13 contracts
+hardening and release readiness work.**
 
 Phased implementation plan. Ordering is forced by the upstream dependency
 spine (`provider` → `provider_utils` → providers → `ai`) plus two
@@ -251,9 +251,9 @@ live realtime smoke test.
   handle (docs/contracts.md graduates from "preview" to "contract"); an
   ABI-compat suite that compiles **old C clients against new libraries**,
   not just the current header against the current tree. Because v1 is the
-  first ABI and no earlier tag exists, the suite starts from a committed,
-  header-independent v1 client snapshot; tagged artifacts join the matrix
-  after the first release.
+  first ABI, the suite began with a committed, header-independent v1 client
+  snapshot. **Tagged-artifact coverage:** ✅ done 2026-07-12 — published
+  v0.1.0 is now the matrix baseline.
 - ✅ Complete C ABI surface (completed 2026-07-11: objects/embeddings/agent/chat/UI chunks as JSON,
   telemetry vtable registration, media).
 - ✅ Idiomatic wrappers: Python package (ctypes/cffi, iterators over pull
@@ -287,19 +287,20 @@ live realtime smoke test.
     exporter with correlated generate/step/model/tool spans, pinned `gen_ai`
     attributes, cryptographic trace/span IDs, explicit and size-triggered
     batching, configurable OTLP/HTTP-JSON endpoint/headers/resource service,
-    and MockServer tool-loop coverage. This completes the breadth bullet;
-    Phase 12 itself remains open for the tagged-artifact ABI matrix and final
-    wrapper acceptance evidence.
+    and MockServer tool-loop coverage. This completes the breadth bullet.
+    **Remaining Phase 12 gates:** ✅ done 2026-07-12 — tagged-artifact ABI
+    and wrapper acceptance evidence verified.
 
-**Accept:** ABI-compat suite green against a previous tagged artifact;
-wrapper test suites in CI; a third-party-style example app per wrapper;
-provider conformance fixtures shared across vendors.
+**Accept:** ✅ done 2026-07-12 — v0.1.0 was published, and the ABI-compat
+suite is green against its tagged artifact; the mechanism runs in CI on every
+push. Wrapper suites have run in CI since 2026-07-11; third-party-style example
+apps and shared cross-vendor conformance fixtures landed 2026-07-11.
 
-- **2026-07-12 release preparation:** the tag-triggered packaging/release
-  workflow and latest-published-release `abi-compat` CI job have landed. The
-  compatibility job skips cleanly while no release exists and activates when
-  v0.1.0 is published. Keep this acceptance item open until that published
-  artifact has actually passed the job.
+- **2026-07-12 release verification:** v0.1.0 was published with all ten
+  GitHub Release assets. The latest-published-release `abi-compat` check passed:
+  the old v0.1.0 header and clients run successfully against the current
+  library. `zig fetch` reproduced the published tarball hash in `HASHES.txt`
+  exactly.
 
 ## Phase 13 — Conformance, contracts, release readiness
 
