@@ -1,0 +1,9 @@
+[package]
+name = "ai-zig-rust-chat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ai = { path = "../../bindings/rust/ai" }
+

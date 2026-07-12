@@ -1,6 +1,7 @@
 # Local smoke checks (act 0.2.89):
 #   act push -j fmt
 #   act push -j python
+#   act push -j rust
 #   act push -j test --matrix os:ubuntu-latest
 
 name: CI
@@ -132,6 +133,42 @@ jobs:
       - name: Run Python binding tests
         working-directory: bindings/python
         run: python -m pytest tests -q -k "not live"
+
+  rust:
+    name: Rust bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Build FFI libraries and header
+        run: zig build --summary all
+
+      - name: Check Rust formatting
+        working-directory: bindings/rust
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        working-directory: bindings/rust
+        env:
+          AI_ZIG_LIB_DIR: ${{ github.workspace }}/zig-out/lib
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Run Rust binding tests
+        working-directory: bindings/rust
+        env:
+          AI_ZIG_LIB_DIR: ${{ github.workspace }}/zig-out/lib
+        run: cargo test --workspace --locked
 
   conformance:
     name: Differential conformance

@@ -8,7 +8,7 @@ It provides `generateText`, `streamText`, multi-step tool execution,
 structured output, embeddings, reranking, reusable agents, UI message
 streams with a framework-agnostic Chat client, and an MCP client across the
 supported providers listed below — usable directly from Zig or through its
-C ABI and Python bindings.
+C ABI, Python bindings, and Rust `-sys` + safe wrapper.
 
 > ai.zig is an independent project and is **not affiliated with or endorsed
 > by Vercel**. The upstream SDK is vendored read-only under `inspiration/`
@@ -16,19 +16,19 @@ C ABI and Python bindings.
 
 ## Status
 
-| Surface | State | Live-tested against | C ABI | Python |
-| --- | --- | --- | --- | --- |
-| Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes |
-| Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes |
-| Structured output (Output strategies) | beta | Claude Haiku 4.5 | objects | objects |
-| Embeddings / reranking | beta | — (canned fixtures) | embeddings | embeddings |
-| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | yes | yes |
-| UI message stream + Chat client | beta | — (canned + in-process e2e) | UI chunks | UI chunks |
-| MCP client (stdio / SSE / streamable HTTP) | beta | stdio live (child process); SSE + streamable HTTP via canned fixtures | — | — |
-| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | image/speech/transcribe | image/speech/transcribe |
-| Providers: anthropic, google, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream (google pending) | all listed except google (C ABI pending) |
-| Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — |
-| Rust bindings | planned | — | — | — |
+| Surface | State | Live-tested against | C ABI | Python | Rust |
+| --- | --- | --- | --- | --- | --- |
+| Text generation + streaming | beta | Anthropic, OpenAI (Chat + Responses) | yes | yes | yes |
+| Multi-step tool loops (incl. approvals) | beta | Anthropic, OpenAI | yes | yes | yes |
+| Structured output (Output strategies) | beta | Claude Haiku 4.5 | objects | objects | objects |
+| Embeddings / reranking | beta | — (canned fixtures) | embeddings | embeddings | embeddings |
+| Agent (`ToolLoopAgent`) | beta | Anthropic, OpenAI | yes | yes | yes |
+| UI message stream + Chat client | beta | — (canned + in-process e2e) | UI chunks | UI chunks | UI chunks |
+| MCP client (stdio / SSE / streamable HTTP) | beta | stdio live (child process); SSE + streamable HTTP via canned fixtures | — | — | — |
+| Media: image / speech / transcribe / video | beta | speech→transcribe live; image + video via canned fixtures | image/speech/transcribe | image/speech/transcribe | image/speech/transcribe |
+| Providers: anthropic, google, openai, openai_compatible, openrouter, xai | beta | per rows above | via generate/stream (google pending) | all listed except google (C ABI pending) | all listed except google (C ABI pending) |
+| Realtime + WebSocket client | beta | OpenAI realtime (gpt-realtime) | — | — | — |
+| Rust bindings | beta | Anthropic streaming + tool callback | full ABI v1 | — | full ABI v1 |
 
 *Last verified: 2026-07-11. The "Live-tested against" column reports the
 endpoints exercised by that successful `-Dlive` gate; other cells state the
@@ -45,13 +45,15 @@ The **C ABI v1 policy is implemented and enforced in-tree**: the build checks
 the header/runtime version query, frozen numeric tags, size-prefixed evolvable
 structs, SONAME and symbol visibility, and compiles and runs a frozen v1
 snapshot client. Cross-release verification against tagged artifacts begins
-with the first tagged release. The Python package now wraps every ABI v1
-surface listed in the table and runs its offline integration suite in CI. It
-is not yet published, and its Python-level API remains preview while packaging
-and downstream feedback settle.
+with the first tagged release. The Python and Rust packages now wrap every ABI
+v1 surface listed in the table and run offline integration suites in CI. The
+Rust safe crate adds deterministic Drop ordering, iterator streams, and
+contained closure callbacks without a third-party runtime dependency. Neither
+wrapper is published yet; their language-level APIs remain preview while
+packaging and downstream feedback settle.
 
 GitHub Actions runs the full test suite on Linux, macOS, and Windows across
-x86_64 and arm64 (six runners), plus formatting, Python-wrapper, and
+x86_64 and arm64 (six runners), plus formatting, Python-wrapper, Rust-wrapper, and
 differential-conformance jobs; Windows FFI artifacts target MinGW.
 
 ## Installing
@@ -75,7 +77,7 @@ exe_mod.addImport("provider_utils", ai_dep.module("provider_utils"));
 ```
 
 Modules exposed: `ai`, `provider`, `provider_utils`, `anthropic`, `google`, `openai`,
-`openai_compatible`, `openrouter`, `xai`, `mcp`. For C/Python:
+`openai_compatible`, `openrouter`, `xai`, `mcp`. For C/Python/Rust:
 `zig build ffi` produces the platform-appropriate static/shared library
 under `zig-out/lib/` and installs `zig-out/include/ai.h`.
 
@@ -183,6 +185,16 @@ thread. See [docs/contracts.md](docs/contracts.md) for the callback,
 cancellation, and lifetime rules, and
 [bindings/python/README.md](bindings/python/README.md) to build and test.
 
+## Using it (Rust)
+
+The Rust workspace contains checked-in raw `ai-sys` declarations and a safe,
+zero-third-party-dependency `ai` crate. It exposes owning handles, iterator
+streams, contained `Send + Sync` tool/telemetry closures, canonical JSON
+strings, and copied media blobs. See
+[bindings/rust/README.md](bindings/rust/README.md) for linking and lifetime
+contracts and [examples/rust](examples/rust/) for the live-tested streaming
+tool CLI.
+
 ## Model routing — read this once
 
 Bare string model ids like `"anthropic/claude-…"` resolve through a
@@ -287,6 +299,7 @@ comes from `build.zig.zon` (**0.16.0**).
 | `zig build test-integration -Dlive` | live API smokes (explicit keys required) |
 | `zig build ffi` | build the static/shared library + install `include/ai.h` |
 | `python3 -m pytest bindings/python` | Python binding suite |
+| `(cd bindings/rust && cargo test --workspace)` | Rust binding suite |
 
 Contributor ground rules (humans and agents): [`AGENTS.md`](AGENTS.md).
 When the compiler pushes back, the stdlib source at `zig env`'s `.std_dir`
@@ -299,6 +312,7 @@ is the documentation.
 | `src/` | the implementation (one directory per module) |
 | `include/ai.h` | the hand-written C ABI header (ABI-locked by test) |
 | `bindings/python/` | the `ai_zig` ctypes package + pytest suite |
+| `bindings/rust/` | the `ai-sys` declarations + safe `ai` wrapper workspace |
 | `inspiration/` | vendored Vercel AI SDK monorepo — **read-only** reference |
 | `docs/porting-guide.md` | TS→Zig mapping + the fidelity ledger |
 | `docs/contracts.md` | behavioral contracts, lifetimes, known sharp edges |

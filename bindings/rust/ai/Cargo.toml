@@ -1,0 +1,13 @@
+[package]
+name = "ai"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Safe Rust wrapper for the ai.zig C ABI v1"
+
+[dependencies]
+ai-sys = { path = "../ai-sys" }
+
+[lib]
+path = "src/lib.rs"
+

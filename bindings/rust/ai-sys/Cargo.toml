@@ -1,0 +1,12 @@
+[package]
+name = "ai-sys"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Raw Rust bindings for the ai.zig C ABI v1"
+links = "ai"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
