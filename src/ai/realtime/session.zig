@@ -360,12 +360,14 @@ const StatePublication = struct {
     arena_state: std.heap.ArenaAllocator,
     state: reducer_api.State,
     changes: reducer_api.Changes,
+    sequence: u64,
 
     fn init(
         gpa: Allocator,
         reducer: *const reducer_api.Reducer,
         callbacks: StateCallbacks,
         changes: reducer_api.Changes,
+        sequence: u64,
     ) !StatePublication {
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         errdefer arena_state.deinit();
@@ -378,6 +380,7 @@ const StatePublication = struct {
             .arena_state = arena_state,
             .state = state,
             .changes = changes,
+            .sequence = sequence,
         };
     }
 
@@ -385,6 +388,14 @@ const StatePublication = struct {
         self.arena_state.deinit();
         self.* = undefined;
     }
+};
+
+const DeliveredPublicationSequences = struct {
+    status: u64 = 0,
+    messages: u64 = 0,
+    events: u64 = 0,
+    is_capturing: u64 = 0,
+    is_playing: u64 = 0,
 };
 
 pub const ErrorInfo = struct {
@@ -461,6 +472,12 @@ pub const RealtimeSession = struct {
     session_config: provider.SessionConfig,
     reducer: reducer_api.Reducer,
     state_mutex: std.Io.Mutex = .init,
+    publication_mutex: std.Io.Mutex = .init,
+    publication_queue: std.ArrayList(StatePublication) = .empty,
+    publication_queue_head: usize = 0,
+    publication_draining: bool = false,
+    next_publication_sequence: u64 = 1,
+    delivered_publication_sequences: DeliveredPublicationSequences = .{},
     tool_group: std.Io.Group = .init,
     default_transport: ?DefaultTransport,
     transport: RealtimeTransport,
@@ -501,6 +518,8 @@ pub const RealtimeSession = struct {
         };
         errdefer self.reducer.deinit();
         errdefer self.arena_state.deinit();
+        errdefer self.publication_queue.deinit(gpa);
+        try self.publication_queue.ensureTotalCapacity(gpa, 8);
         const arena = self.arena_state.allocator();
         self.session_config = try cloneSessionConfig(arena, options.session_config);
         if (options.tools.len != 0) {
@@ -588,8 +607,7 @@ pub const RealtimeSession = struct {
         } } } });
         try self.sendEvent(.{ .response_create = .{} });
         var publication = try self.addUserTextPublication(text);
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        try self.dispatchPublication(&publication);
     }
 
     pub fn sendAudio(self: *RealtimeSession, base64_audio: []const u8) anyerror!void {
@@ -622,8 +640,7 @@ pub const RealtimeSession = struct {
         var staging_arena_state = std.heap.ArenaAllocator.init(self.gpa);
         defer staging_arena_state.deinit();
         var staged = try self.stageToolOutput(staging_arena_state.allocator(), call_id, result);
-        defer staged.publication.deinit();
-        self.dispatchPublication(staged.publication);
+        try self.dispatchPublication(&staged.publication);
         try self.transport.sendEvent(.{ .conversation_item_create = .{ .item = .{ .function_call_output = .{
             .call_id = staged.call_id,
             .name = staged.name,
@@ -637,8 +654,7 @@ pub const RealtimeSession = struct {
         defer guard.deinit();
         try self.audio.startCapture(self.io, .{ .ctx = self, .on_audio = onCapturedAudio });
         var publication = try self.setCapturingPublication(true);
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        try self.dispatchPublication(&publication);
     }
 
     pub fn stopAudioCapture(self: *RealtimeSession) void {
@@ -649,8 +665,9 @@ pub const RealtimeSession = struct {
             self.notifyError(.{ .err = err, .message = @errorName(err) });
             return;
         };
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        self.dispatchPublication(&publication) catch |err| {
+            self.notifyError(.{ .err = err, .message = @errorName(err) });
+        };
     }
 
     pub fn stopPlayback(self: *RealtimeSession) void {
@@ -661,8 +678,9 @@ pub const RealtimeSession = struct {
             self.notifyError(.{ .err = err, .message = @errorName(err) });
             return;
         };
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        self.dispatchPublication(&publication) catch |err| {
+            self.notifyError(.{ .err = err, .message = @errorName(err) });
+        };
     }
 
     pub fn dispose(self: *RealtimeSession) void {
@@ -695,9 +713,11 @@ pub const RealtimeSession = struct {
         var final_publication = self.finalPublication() catch null;
         self.audio.deinit(self.io);
         if (final_publication) |*publication| {
-            self.dispatchPublication(publication.*);
-            publication.deinit();
+            self.dispatchPublication(publication) catch {};
         }
+        std.debug.assert(!self.publication_draining);
+        std.debug.assert(self.publication_queue.items.len == 0);
+        self.publication_queue.deinit(self.gpa);
         self.reducer.deinit();
         self.tool_calls_in_response.deinit(self.gpa);
         self.submitted_tool_outputs.deinit(self.gpa);
@@ -721,9 +741,8 @@ pub const RealtimeSession = struct {
         var staging_arena_state = std.heap.ArenaAllocator.init(self.gpa);
         defer staging_arena_state.deinit();
         var staged = try self.reduceAndStage(staging_arena_state.allocator(), event);
-        defer staged.publication.deinit();
 
-        self.dispatchPublication(staged.publication);
+        try self.dispatchPublication(&staged.publication);
         if (self.on_event) |callback| {
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
@@ -785,8 +804,9 @@ pub const RealtimeSession = struct {
             self.notifyError(.{ .err = err, .message = @errorName(err) });
             return;
         };
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        self.dispatchPublication(&publication) catch |err| {
+            self.notifyError(.{ .err = err, .message = @errorName(err) });
+        };
     }
 
     fn handleSpeechStarted(self: *RealtimeSession) !void {
@@ -811,8 +831,7 @@ pub const RealtimeSession = struct {
             break :blk value;
         };
         var publication = try self.setPlayingPublication(false);
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        try self.dispatchPublication(&publication);
         if (item_id) |owned| try self.transport.sendEvent(.{ .conversation_item_truncate = .{
             .item_id = owned,
             .content_index = 0,
@@ -898,12 +917,22 @@ pub const RealtimeSession = struct {
     fn setStatus(self: *RealtimeSession, status: reducer_api.Status) anyerror!void {
         if (self.lifecycleState() != .active) return error.RealtimeSessionDisposed;
         var publication = try self.setStatusPublication(status);
-        defer publication.deinit();
-        self.dispatchPublication(publication);
+        try self.dispatchPublication(&publication);
     }
 
     fn makePublicationLocked(self: *RealtimeSession, changes: reducer_api.Changes) !StatePublication {
-        return StatePublication.init(self.gpa, &self.reducer, self.state_callbacks, changes);
+        const sequence = self.next_publication_sequence;
+        if (sequence == std.math.maxInt(u64))
+            return error.RealtimeStatePublicationSequenceExhausted;
+        const publication = try StatePublication.init(
+            self.gpa,
+            &self.reducer,
+            self.state_callbacks,
+            changes,
+            sequence,
+        );
+        self.next_publication_sequence = sequence + 1;
+        return publication;
     }
 
     fn setStatusPublication(self: *RealtimeSession, status: reducer_api.Status) !StatePublication {
@@ -978,30 +1007,78 @@ pub const RealtimeSession = struct {
         return self.makePublicationLocked(changes);
     }
 
-    fn dispatchPublication(self: *RealtimeSession, publication: StatePublication) void {
+    /// Always consumes `publication`, including when enqueueing fails.
+    fn dispatchPublication(self: *RealtimeSession, publication: *StatePublication) Allocator.Error!void {
+        self.publication_mutex.lockUncancelable(self.io);
+        self.publication_queue.append(self.gpa, publication.*) catch |err| {
+            self.publication_mutex.unlock(self.io);
+            publication.deinit();
+            return err;
+        };
+        publication.* = undefined;
+
+        if (self.publication_draining) {
+            self.publication_mutex.unlock(self.io);
+            return;
+        }
+        self.publication_draining = true;
+        self.publication_mutex.unlock(self.io);
+        self.drainPublications();
+    }
+
+    fn drainPublications(self: *RealtimeSession) void {
+        while (true) {
+            self.publication_mutex.lockUncancelable(self.io);
+            if (self.publication_queue.items.len == 0) {
+                std.debug.assert(self.publication_queue_head == 0);
+                self.publication_draining = false;
+                self.publication_mutex.unlock(self.io);
+                return;
+            }
+
+            var publication = self.publication_queue.items[self.publication_queue_head];
+            self.publication_queue_head += 1;
+            if (self.publication_queue_head == self.publication_queue.items.len) {
+                self.publication_queue.clearRetainingCapacity();
+                self.publication_queue_head = 0;
+            }
+            self.publication_mutex.unlock(self.io);
+
+            self.deliverPublication(publication);
+            publication.deinit();
+        }
+    }
+
+    fn deliverPublication(self: *RealtimeSession, publication: StatePublication) void {
         const state_value = publication.state;
         const changes = publication.changes;
-        if (changes.status) if (self.state_callbacks.on_status) |callback| {
+        const sequence = publication.sequence;
+        if (changes.status and sequence > self.delivered_publication_sequences.status) if (self.state_callbacks.on_status) |callback| {
+            self.delivered_publication_sequences.status = sequence;
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
             callback(self.state_callbacks.ctx, state_value.status);
         };
-        if (changes.messages) if (self.state_callbacks.on_messages) |callback| {
+        if (changes.messages and sequence > self.delivered_publication_sequences.messages) if (self.state_callbacks.on_messages) |callback| {
+            self.delivered_publication_sequences.messages = sequence;
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
             callback(self.state_callbacks.ctx, state_value.messages);
         };
-        if (changes.events) if (self.state_callbacks.on_events) |callback| {
+        if (changes.events and sequence > self.delivered_publication_sequences.events) if (self.state_callbacks.on_events) |callback| {
+            self.delivered_publication_sequences.events = sequence;
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
             callback(self.state_callbacks.ctx, state_value.events);
         };
-        if (changes.is_capturing) if (self.state_callbacks.on_is_capturing) |callback| {
+        if (changes.is_capturing and sequence > self.delivered_publication_sequences.is_capturing) if (self.state_callbacks.on_is_capturing) |callback| {
+            self.delivered_publication_sequences.is_capturing = sequence;
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
             callback(self.state_callbacks.ctx, state_value.is_capturing);
         };
-        if (changes.is_playing) if (self.state_callbacks.on_is_playing) |callback| {
+        if (changes.is_playing and sequence > self.delivered_publication_sequences.is_playing) if (self.state_callbacks.on_is_playing) |callback| {
+            self.delivered_publication_sequences.is_playing = sequence;
             const callback_guard = self.enterCallback();
             defer callback_guard.deinit();
             callback(self.state_callbacks.ctx, state_value.is_playing);
@@ -1566,6 +1643,198 @@ test "RealtimeSession connect publishes state and sends session update" {
     try session.sendTextMessage("hello");
     try std.testing.expectEqual(1, recorder.message_changes);
     try std.testing.expectEqual(1, transport.countContaining("text-message"));
+}
+
+test "RealtimeSession coalesces a stale publication after a newer snapshot is delivered" {
+    const Recorder = struct {
+        deliveries: usize = 0,
+        message_count: usize = 0,
+        last_text: [32]u8 = undefined,
+        last_text_len: usize = 0,
+
+        fn messages(raw: ?*anyopaque, values: []const ui.UIMessage) void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.deliveries += 1;
+            self.message_count = values.len;
+            const text = values[values.len - 1].parts[0].text.text;
+            self.last_text_len = @min(text.len, self.last_text.len);
+            @memcpy(self.last_text[0..self.last_text_len], text[0..self.last_text_len]);
+        }
+    };
+    const Interleaving = struct {
+        session: *RealtimeSession,
+        io: std.Io,
+        older_built: std.Io.Event = .unset,
+        newer_dispatched: std.Io.Event = .unset,
+        failed: std.atomic.Value(bool) = .init(false),
+
+        fn recordFailure(self: *@This()) void {
+            self.failed.store(true, .release);
+            self.older_built.set(self.io);
+            self.newer_dispatched.set(self.io);
+        }
+
+        fn buildOlder(self: *@This()) void {
+            var publication = self.session.addUserTextPublication("older") catch {
+                self.recordFailure();
+                return;
+            };
+            self.older_built.set(self.io);
+            self.newer_dispatched.waitUncancelable(self.io);
+            self.session.dispatchPublication(&publication) catch {
+                self.recordFailure();
+            };
+        }
+
+        fn buildNewer(self: *@This()) void {
+            self.older_built.waitUncancelable(self.io);
+            var publication = self.session.addUserTextPublication("newer") catch {
+                self.recordFailure();
+                return;
+            };
+            self.session.dispatchPublication(&publication) catch {
+                self.recordFailure();
+                return;
+            };
+            self.newer_dispatched.set(self.io);
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var model: FakeModel = .{};
+    var transport: FakeTransport = .{ .allocator = allocator, .io = io };
+    defer transport.cleanup();
+    var recorder: Recorder = .{};
+    const session = try RealtimeSession.init(allocator, io, .{
+        .model = model.model(),
+        .transport = transport.transport(),
+        .state_callbacks = .{ .ctx = &recorder, .on_messages = Recorder.messages },
+    });
+    defer session.dispose();
+
+    var interleaving: Interleaving = .{ .session = session, .io = io };
+    const older_thread = try std.Thread.spawn(.{}, Interleaving.buildOlder, .{&interleaving});
+    const newer_thread = std.Thread.spawn(.{}, Interleaving.buildNewer, .{&interleaving}) catch |err| {
+        interleaving.recordFailure();
+        older_thread.join();
+        return err;
+    };
+    older_thread.join();
+    newer_thread.join();
+
+    try std.testing.expect(!interleaving.failed.load(.acquire));
+    try std.testing.expectEqual(1, recorder.deliveries);
+    try std.testing.expectEqual(2, recorder.message_count);
+    try std.testing.expectEqualStrings("newer", recorder.last_text[0..recorder.last_text_len]);
+}
+
+test "RealtimeSession newer status publication does not swallow an older messages publication" {
+    const Recorder = struct {
+        status_deliveries: usize = 0,
+        status: reducer_api.Status = .disconnected,
+        message_deliveries: usize = 0,
+        message_count: usize = 0,
+
+        fn statusChanged(raw: ?*anyopaque, value: reducer_api.Status) void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.status_deliveries += 1;
+            self.status = value;
+        }
+
+        fn messages(raw: ?*anyopaque, values: []const ui.UIMessage) void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.message_deliveries += 1;
+            self.message_count = values.len;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var model: FakeModel = .{};
+    var transport: FakeTransport = .{ .allocator = allocator, .io = io };
+    defer transport.cleanup();
+    var recorder: Recorder = .{};
+    const session = try RealtimeSession.init(allocator, io, .{
+        .model = model.model(),
+        .transport = transport.transport(),
+        .state_callbacks = .{
+            .ctx = &recorder,
+            .on_status = Recorder.statusChanged,
+            .on_messages = Recorder.messages,
+        },
+    });
+    defer session.dispose();
+
+    var messages_publication = try session.addUserTextPublication("message");
+    var status_publication = session.setStatusPublication(.connecting) catch |err| {
+        messages_publication.deinit();
+        return err;
+    };
+    session.dispatchPublication(&status_publication) catch |err| {
+        messages_publication.deinit();
+        return err;
+    };
+    try session.dispatchPublication(&messages_publication);
+
+    try std.testing.expectEqual(1, recorder.status_deliveries);
+    try std.testing.expectEqual(reducer_api.Status.connecting, recorder.status);
+    try std.testing.expectEqual(1, recorder.message_deliveries);
+    try std.testing.expectEqual(1, recorder.message_count);
+}
+
+test "RealtimeSession queues a publication triggered by a reentrant state callback" {
+    const Reentrant = struct {
+        session: ?*RealtimeSession = null,
+        deliveries: usize = 0,
+        first_snapshot_correct: bool = false,
+        second_snapshot_correct: bool = false,
+        in_callback: bool = false,
+        callbacks_overlapped: bool = false,
+        send_failed: bool = false,
+
+        fn messages(raw: ?*anyopaque, values: []const ui.UIMessage) void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            if (self.in_callback) self.callbacks_overlapped = true;
+            self.in_callback = true;
+            defer self.in_callback = false;
+
+            self.deliveries += 1;
+            if (self.deliveries == 1) {
+                self.first_snapshot_correct = values.len == 1 and
+                    std.mem.eql(u8, values[0].parts[0].text.text, "outer");
+                self.session.?.sendTextMessage("inner") catch {
+                    self.send_failed = true;
+                };
+            } else if (self.deliveries == 2) {
+                self.second_snapshot_correct = values.len == 2 and
+                    std.mem.eql(u8, values[0].parts[0].text.text, "outer") and
+                    std.mem.eql(u8, values[1].parts[0].text.text, "inner");
+            }
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var model: FakeModel = .{};
+    var transport: FakeTransport = .{ .allocator = allocator, .io = io };
+    defer transport.cleanup();
+    var reentrant: Reentrant = .{};
+    const session = try RealtimeSession.init(allocator, io, .{
+        .model = model.model(),
+        .transport = transport.transport(),
+        .state_callbacks = .{ .ctx = &reentrant, .on_messages = Reentrant.messages },
+    });
+    defer session.dispose();
+    reentrant.session = session;
+
+    try session.sendTextMessage("outer");
+
+    try std.testing.expect(!reentrant.send_failed);
+    try std.testing.expect(!reentrant.callbacks_overlapped);
+    try std.testing.expectEqual(2, reentrant.deliveries);
+    try std.testing.expect(reentrant.first_snapshot_correct);
+    try std.testing.expect(reentrant.second_snapshot_correct);
 }
 
 test "RealtimeSession gates out-of-order multi-tool outputs behind response done" {

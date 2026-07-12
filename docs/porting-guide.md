@@ -615,3 +615,10 @@ Track every deviation here; anything not listed is a bug.
     inventing an uncloseable parent. Zig 0.16 has no global
     `std.crypto.random`; IDs use its threadsafe cryptographic replacement,
     `std.Io.random`, from the exporter-provided `Io`.
+22. Realtime state publications carry a construction sequence and use a
+    single delivery queue because Zig session mutations can originate on the
+    WebSocket receive task, tool tasks, and caller threads. State callbacks
+    are serialized, and each callback channel independently coalesces a late
+    snapshot only after a newer snapshot for that same channel was delivered.
+    Upstream relies on the JavaScript event loop for this ordering and has no
+    corresponding mechanism.

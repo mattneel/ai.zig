@@ -99,6 +99,14 @@ hostname that *resolves* to a private address is not caught at this layer
 
 ## Realtime sessions
 
+- State callbacks (`on_status`, `on_messages`, `on_events`,
+  `on_is_capturing`, and `on_is_playing`) are serialized. Snapshot delivery
+  is monotonic independently for each callback channel: if a newer full-state
+  snapshot for a channel has already been delivered, an older snapshot that
+  arrives later is coalesced. A newer publication on one channel does not
+  suppress an older, still-current snapshot on another channel. Re-entrant
+  session changes are queued until the active state callback returns, and no
+  state callback runs while the reducer state mutex is held.
 - The host-provided `RealtimeAudio` vtable owns playback lifetime.
   `is_playing` becomes true when audio is handed to `play` and becomes
   false only on explicit `stopPlayback` or a server `speech_started`
