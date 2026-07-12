@@ -107,6 +107,10 @@ hostname that *resolves* to a private address is not caught at this layer
   suppress an older, still-current snapshot on another channel. Re-entrant
   session changes are queued until the active state callback returns, and no
   state callback runs while the reducer state mutex is held.
+- `sendTextMessage` optimistically appends and publishes the user message
+  before sending `conversation-item-create` and `response-create`. A transport
+  failure propagates without rolling back that local entry, matching tool
+  output staging; remote acceptance or response creation may be incomplete.
 - The host-provided `RealtimeAudio` vtable owns playback lifetime.
   `is_playing` becomes true when audio is handed to `play` and becomes
   false only on explicit `stopPlayback` or a server `speech_started`

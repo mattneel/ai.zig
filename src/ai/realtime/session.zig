@@ -601,13 +601,13 @@ pub const RealtimeSession = struct {
     pub fn sendTextMessage(self: *RealtimeSession, text: []const u8) anyerror!void {
         const guard = try self.enterCall();
         defer guard.finishDeferredLifecycleAction();
-        try self.sendEvent(.{ .conversation_item_create = .{ .item = .{ .text_message = .{
-            .role = .user,
-            .text = text,
-        } } } });
-        try self.sendEvent(.{ .response_create = .{} });
         var publication = try self.addUserTextPublication(text);
         try self.dispatchPublication(&publication);
+        self.transport.sendEvent(.{ .conversation_item_create = .{ .item = .{ .text_message = .{
+            .role = .user,
+            .text = text,
+        } } } }, self.diag) catch |err| return self.fail(err);
+        self.transport.sendEvent(.{ .response_create = .{} }, self.diag) catch |err| return self.fail(err);
     }
 
     pub fn sendAudio(self: *RealtimeSession, base64_audio: []const u8) anyerror!void {
@@ -1427,6 +1427,8 @@ const FakeTransport = struct {
     response_create_count: usize = 0,
     response_create_attempt_count: usize = 0,
     fail_response_create_sends: usize = 0,
+    inject_assistant_response_on_text_item: bool = false,
+    assistant_response_injected: bool = false,
     disconnect_count: usize = 0,
     deinit_count: usize = 0,
     disconnect_entered: ?*std.Io.Event = null,
@@ -1480,30 +1482,44 @@ const FakeTransport = struct {
     }
     fn sendEvent(raw: *anyopaque, event: provider.ClientEvent, _: ?*provider.Diagnostics) anyerror!void {
         const self = fromRaw(raw);
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (event == .response_create) {
-            self.response_create_attempt_count += 1;
-            if (self.fail_response_create_sends != 0) {
-                self.fail_response_create_sends -= 1;
-                return error.ScriptedResponseCreateFailure;
+        const inject_assistant_response = blk: {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            if (event == .response_create) {
+                self.response_create_attempt_count += 1;
+                if (self.fail_response_create_sends != 0) {
+                    self.fail_response_create_sends -= 1;
+                    return error.ScriptedResponseCreateFailure;
+                }
             }
-        }
-        const text = try provider.wire.stringifyAlloc(self.allocator, event);
-        try self.sent.append(self.allocator, text);
-        switch (event) {
-            .response_create => {
-                self.response_create_count += 1;
-                self.response_created.set(self.io);
-            },
-            .conversation_item_create => |value| switch (value.item) {
-                .function_call_output => {
-                    self.output_count += 1;
-                    if (self.output_count >= 2) self.outputs_done.set(self.io);
+            const text = try provider.wire.stringifyAlloc(self.allocator, event);
+            try self.sent.append(self.allocator, text);
+            var inject = false;
+            switch (event) {
+                .response_create => {
+                    self.response_create_count += 1;
+                    self.response_created.set(self.io);
+                },
+                .conversation_item_create => |value| switch (value.item) {
+                    .function_call_output => {
+                        self.output_count += 1;
+                        if (self.output_count >= 2) self.outputs_done.set(self.io);
+                    },
+                    .text_message => if (self.inject_assistant_response_on_text_item and
+                        !self.assistant_response_injected)
+                    {
+                        self.assistant_response_injected = true;
+                        inject = true;
+                    },
+                    .audio_message => {},
                 },
                 else => {},
-            },
-            else => {},
+            }
+            break :blk inject;
+        };
+        if (inject_assistant_response) {
+            try self.emit(textDelta("assistant-item", "Hello realtime"));
+            try self.emit(textDone("assistant-item", "Hello realtime"));
         }
     }
     fn sendRaw(_: *anyopaque, _: RawMessage) anyerror!void {}
@@ -1619,6 +1635,24 @@ fn responseDone() provider.ServerEvent {
     } };
 }
 
+fn textDelta(item_id: []const u8, delta: []const u8) provider.ServerEvent {
+    return .{ .text_delta = .{
+        .response_id = "response-1",
+        .item_id = item_id,
+        .delta = delta,
+        .raw = .null,
+    } };
+}
+
+fn textDone(item_id: []const u8, text: ?[]const u8) provider.ServerEvent {
+    return .{ .text_done = .{
+        .response_id = "response-1",
+        .item_id = item_id,
+        .text = text,
+        .raw = .null,
+    } };
+}
+
 test "RealtimeSession connect publishes state and sends session update" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -1643,6 +1677,94 @@ test "RealtimeSession connect publishes state and sends session update" {
     try session.sendTextMessage("hello");
     try std.testing.expectEqual(1, recorder.message_changes);
     try std.testing.expectEqual(1, transport.countContaining("text-message"));
+}
+
+test "RealtimeSession stages user text before a reentrant assistant response" {
+    const Recorder = struct {
+        deliveries: usize = 0,
+        message_count: usize = 0,
+        last_text: [64]u8 = undefined,
+        last_text_len: usize = 0,
+
+        fn messages(raw: ?*anyopaque, values: []const ui.UIMessage) void {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            self.deliveries += 1;
+            self.message_count = values.len;
+            for (values) |message| for (message.parts) |part| switch (part) {
+                .text => |value| {
+                    self.last_text_len = @min(value.text.len, self.last_text.len);
+                    @memcpy(self.last_text[0..self.last_text_len], value.text[0..self.last_text_len]);
+                },
+                else => {},
+            };
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var model: FakeModel = .{};
+    var transport: FakeTransport = .{
+        .allocator = allocator,
+        .io = io,
+        .inject_assistant_response_on_text_item = true,
+    };
+    defer transport.cleanup();
+    var recorder: Recorder = .{};
+    const session = try RealtimeSession.init(allocator, io, .{
+        .model = model.model(),
+        .transport = transport.transport(),
+        .state_callbacks = .{ .ctx = &recorder, .on_messages = Recorder.messages },
+    });
+    defer session.dispose();
+
+    try session.connect();
+    try session.sendTextMessage("hello realtime");
+
+    var snapshot_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer snapshot_arena_state.deinit();
+    const snapshot = try session.state(snapshot_arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 2), snapshot.messages.len);
+    try std.testing.expectEqual(ui.Role.user, snapshot.messages[0].role);
+    try std.testing.expectEqualStrings("hello realtime", snapshot.messages[0].parts[0].text.text);
+    try std.testing.expectEqual(ui.Role.assistant, snapshot.messages[1].role);
+    try std.testing.expectEqualStrings("Hello realtime", snapshot.messages[1].parts[0].text.text);
+
+    try std.testing.expect(transport.assistant_response_injected);
+    try std.testing.expectEqual(@as(usize, 3), recorder.deliveries);
+    try std.testing.expectEqual(@as(usize, 2), recorder.message_count);
+    try std.testing.expectEqualStrings("Hello realtime", recorder.last_text[0..recorder.last_text_len]);
+}
+
+test "RealtimeSession retains optimistic user text when response send fails" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var model: FakeModel = .{};
+    var transport: FakeTransport = .{
+        .allocator = allocator,
+        .io = io,
+        .fail_response_create_sends = 1,
+    };
+    defer transport.cleanup();
+    const session = try RealtimeSession.init(allocator, io, .{
+        .model = model.model(),
+        .transport = transport.transport(),
+    });
+    defer session.dispose();
+
+    try session.connect();
+    try std.testing.expectError(
+        error.ScriptedResponseCreateFailure,
+        session.sendTextMessage("unsent response"),
+    );
+
+    var snapshot_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer snapshot_arena_state.deinit();
+    const snapshot = try session.state(snapshot_arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, 1), snapshot.messages.len);
+    try std.testing.expectEqual(ui.Role.user, snapshot.messages[0].role);
+    try std.testing.expectEqualStrings("unsent response", snapshot.messages[0].parts[0].text.text);
+    try std.testing.expectEqual(@as(usize, 1), transport.response_create_attempt_count);
+    try std.testing.expectEqual(@as(usize, 0), transport.response_create_count);
 }
 
 test "RealtimeSession coalesces a stale publication after a newer snapshot is delivered" {
