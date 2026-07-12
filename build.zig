@@ -41,6 +41,15 @@ pub fn build(b: *std.Build) void {
     ai.addImport("provider", provider);
     ai.addImport("provider_utils", provider_utils);
 
+    const otel = b.addModule("otel", .{
+        .root_source_file = b.path("src/otel/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    otel.addImport("provider", provider);
+    otel.addImport("provider_utils", provider_utils);
+    otel.addImport("ai", ai);
+
     const openai_compatible = b.addModule("openai_compatible", .{
         .root_source_file = b.path("src/openai_compatible/root.zig"),
         .target = target,
@@ -251,6 +260,7 @@ pub fn build(b: *std.Build) void {
     openai.addImport("test_support", test_support);
     google.addImport("test_support", test_support);
     ai.addImport("test_support", test_support);
+    otel.addImport("test_support", test_support);
     xai.addImport("test_support", test_support);
     ffi.addImport("test_support", test_support);
 
@@ -286,6 +296,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "provider", .test_step = "provider", .module = provider },
         .{ .name = "provider_utils", .test_step = "provider-utils", .module = provider_utils },
         .{ .name = "ai", .test_step = "ai", .module = ai },
+        .{ .name = "otel", .test_step = "otel", .module = otel },
         .{ .name = "openai_compatible", .test_step = "openai-compatible", .module = openai_compatible },
         .{ .name = "openrouter", .test_step = "openrouter", .module = openrouter },
         .{ .name = "xai", .test_step = "xai", .module = xai },

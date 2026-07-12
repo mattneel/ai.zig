@@ -597,3 +597,21 @@ Track every deviation here; anything not listed is a bug.
     unsupported here, and Google is intentionally not added to the C FFI in
     this change; those are separate follow-ups. Provider-V4 image lookup
     therefore returns `NoSuchModelError`.
+21. The Phase-12 OTel module is a minimal OTLP/HTTP **JSON** trace exporter,
+    not an OpenTelemetry SDK and not an OTLP protobuf/gRPC client. It posts
+    `resourceSpans/scopeSpans/spans` through `provider_utils.HttpTransport` to
+    the configured endpoint. Batches flush explicitly or synchronously at the
+    configured size; v1 has no background timer/thread. Attribute naming
+    follows the pinned GenAI conventions (`gen_ai.system`, request/response,
+    usage, and tool groups), deliberately preferring historical
+    `gen_ai.system` over the vendored package's newer
+    `gen_ai.provider.name`. Generate/object events carry enough `call_id`,
+    step, and tool-call correlation to emit root → step → model → tool trees;
+    `Meta` itself carries only record-input/output and function flags. The
+    tool enter hook omits `tool_call_id`, so concurrent hook tokens are matched
+    to arriving tool-start events only for timing, never for parent selection.
+    Embed/rerank events expose no outer-operation start/end pair in the Zig
+    vtable, so each model-call span is an independent root rather than
+    inventing an uncloseable parent. Zig 0.16 has no global
+    `std.crypto.random`; IDs use its threadsafe cryptographic replacement,
+    `std.Io.random`, from the exporter-provided `Io`.

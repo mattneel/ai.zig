@@ -256,26 +256,40 @@ live realtime smoke test.
   after the first release.
 - ✅ Complete C ABI surface (completed 2026-07-11: objects/embeddings/agent/chat/UI chunks as JSON,
   telemetry vtable registration, media).
-- Idiomatic wrappers: Python package (ctypes/cffi, iterators over pull
+- ✅ Idiomatic wrappers: Python package (ctypes/cffi, iterators over pull
   streams, context managers, documented GIL/exception/shutdown rules) and
   Rust `-sys` crate + safe wrapper.
   - **2026-07-11 Python progress:** complete ABI-v1 coverage for objects,
     embeddings, agents, UI chunks, telemetry, and media; native OpenAI/xAI
     constructors; offline callback/blob integration tests in CI; and a
-    third-party-style streaming-tool example. The Rust `-sys` crate and safe
-    wrapper remain.
-- Provider breadth via `openai_compatible` config table (groq, deepseek,
+    third-party-style streaming-tool example.
+  - **2026-07-11 Rust completion:** added a checked-in, hand-written `ai-sys`
+    crate covering the frozen ABI v1 header without a bindgen build dependency;
+    a zero-third-party-dependency safe crate with retained Drop ordering,
+    iterator streams, contained Rust tool/telemetry closures, canonical-JSON
+    object/embedding surfaces, agents, and copied media blobs; dependency-free
+    offline HTTP integration tests in a dedicated CI job; and a
+    third-party-style streaming-tool example live-validated against Anthropic
+    with explicit no-key behavior.
+- ✅ Provider breadth via `openai_compatible` config table (groq, deepseek,
   mistral, togetherai, fireworks, …); `google` native provider; otel
   exporter module implementing the telemetry vtable (gen_ai SemConv).
   - **2026-07-11 progress:** added table-driven Groq, DeepSeek, Mistral,
     Together AI, and Fireworks presets plus shared parameterized factory and
-    MockServer chat conformance fixtures. The otel exporter remains.
+    MockServer chat conformance fixtures.
   - **2026-07-11 Google progress:** added the native Google Generative AI
     provider with `generateContent`/SSE `streamGenerateContent`, function and
     provider tools, structured output and thinking/safety options, single and
     batch embeddings, 29 module tests plus two orchestration integrations, and
     a live native-wire Gemini smoke. FFI exposure remains a follow-up outside
     this breadth slice.
+  - **2026-07-11 otel completion:** added a thread-safe telemetry-vtable
+    exporter with correlated generate/step/model/tool spans, pinned `gen_ai`
+    attributes, cryptographic trace/span IDs, explicit and size-triggered
+    batching, configurable OTLP/HTTP-JSON endpoint/headers/resource service,
+    and MockServer tool-loop coverage. This completes the breadth bullet;
+    Phase 12 itself remains open for the tagged-artifact ABI matrix and final
+    wrapper acceptance evidence.
 
 **Accept:** ABI-compat suite green against a previous tagged artifact;
 wrapper test suites in CI; a third-party-style example app per wrapper;
