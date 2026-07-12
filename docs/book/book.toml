@@ -1,0 +1,16 @@
+[book]
+title = "ai.zig"
+authors = ["Matt Neel", "ai.zig contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/mattneel/ai.zig"
+edit-url-template = "https://github.com/mattneel/ai.zig/edit/master/docs/book/{path}"
+site-url = "/ai.zig/"
+
+[output.html.search]
+enable = true

@@ -10,6 +10,8 @@ streams with a framework-agnostic Chat client, and an MCP client across the
 supported providers listed below — usable directly from Zig or through its
 C ABI, Python bindings, and Rust `-sys` + safe wrapper.
 
+Read the full guide at **[mattneel.github.io/ai.zig](https://mattneel.github.io/ai.zig/)**.
+
 > ai.zig is an independent project and is **not affiliated with or endorsed
 > by Vercel**. The upstream SDK is vendored read-only under `inspiration/`
 > as the porting reference.

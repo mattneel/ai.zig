@@ -306,6 +306,10 @@ provider conformance fixtures shared across vendors.
   and retry decisions; diff; publish a per-surface pass table (this replaces
   raw test counts as the public compatibility claim). Live tests remain a
   separate provider-drift layer with dated model ids.
+- **2026-07-11 documentation publication:** the mdBook GitHub Pages workflow
+  runs the differential harness for each `master` deployment and embeds its
+  generated per-surface table, so the published report is tied to the exact
+  deployed commit.
 - Contracts hardening from docs/contracts.md open items: duplicate
   tool-call-id contract; approval-token hardening (run/principal/model
   binding, expiry, nonce — ledgered deviation if adopted); DNS-rebinding
@@ -327,10 +331,10 @@ tree.
   any new deviation.
 - Every phase ports the relevant upstream *tests*, not just code.
 - Live-API tests are opt-in (`-Dlive` + env keys), never in default CI.
-  Real keys for smoke tests live in `~/src/rctr/.env` (`export`-format;
+  Supply real keys through a repository-external, `export`-format env file;
   currently `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
-  `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`) — source it for live runs; never
-  commit, copy, or print values. OpenRouter now gives one-key coverage of
-  many vendors through `OPENROUTER_API_KEY`.
+  `GOOGLE_API_KEY`, and `OPENROUTER_API_KEY`. Never commit, copy, or print
+  values. OpenRouter gives one-key coverage of many vendors through
+  `OPENROUTER_API_KEY`.
 - Upstream tracks a moving target: `inspiration/` is re-pinned deliberately,
   with a diff review of `packages/provider` (spec changes ripple furthest).

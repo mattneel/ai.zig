@@ -3,7 +3,7 @@
 This is the concrete design document for the port (an independent,
 parity-focused implementation — see README "What parity means here" and
 docs/contracts.md for the user-facing contracts). It compresses the deep
-research in [`docs/research/`](research/) into decisions and recipes. When a
+research in [`docs/research/`](https://github.com/mattneel/ai.zig/tree/master/docs/research) into decisions and recipes. When a
 claim here seems surprising, the research reports carry the file-level
 evidence; when code is being written, the upstream sources and their tests in
 `inspiration/` are the final authority.
@@ -286,7 +286,7 @@ Known acceptable limitations: no HTTP/2 (provider APIs work on 1.1), TLS
   fail — unknown Responses-API event types coerce to an `unknown` variant).
   Unions-by-`type`-field need a small custom dispatch helper.
 - **`fixJson`** — the partial-JSON repair state machine powering
-  `streamObject` partials and tool-input streaming — ports 1:1: linear scan,
+  `streamObject` partials and tool-input streaming — ports directly: linear scan,
   explicit 17-state stack, output = `input[0..lastValid+1]` + closers.
   It is load-bearing; port its tests first.
 - Incremental partial-object parsing pairs `fixJson` with re-parse per delta

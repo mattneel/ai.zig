@@ -6,3 +6,8 @@ __pycache__/
 *.pyc
 conformance/node_modules/
 conformance/.artifacts/
+docs/book/book/
+docs/book/src/appendix/contracts.md
+docs/book/src/appendix/porting-guide.md
+docs/book/src/appendix/roadmap.md
+docs/book/src/appendix/conformance-report.md
